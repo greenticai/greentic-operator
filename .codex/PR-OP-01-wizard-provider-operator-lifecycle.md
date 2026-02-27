@@ -127,7 +127,7 @@ well-known pack listing (catalog provider; implementation detail decided by audi
 user-supplied pack locators (OCI refs / local refs if supported by existing resolver)
 
 Do not bake GHCR paths or org assumptions into core logic.
-Catalog implementation can default to greentic-ai-org sources, but it must be pluggable.
+Catalog implementation can default to greenticai-org sources, but it must be pluggable.
 
 4) Pack-declared setup: ask what the pack declares
 
@@ -356,3 +356,4 @@ Do an audit first to locate the correct bundle creation/materialization APIs and
 Do not invent a new bundle directory layout. Use existing internal bundle writer/loader.
 Keep dry_run side-effect free and preserve existing CLI UX.
 Use the existing gmap + resolver allow pipeline (same semantics as `greentic-operator demo allow`). Do not invent allow storage. Wizard must write gmap rules (`PACK[/FLOW[/NODE]]` up to 3 segments), rerun resolver, and ensure the resolved manifest is copied/overwritten so demo start sees changes immediately without rebuild. Leave committed `[patch.crates-io]` until test cycle is complete and publishing is ready.
+

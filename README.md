@@ -130,8 +130,8 @@ When iterating in a workspace/monorepo, you can resolve binaries from local buil
 instead of relying on `cargo binstall` or `$PATH`:
 
 ```bash
-greentic-operator dev on --root /projects/ai/greentic-ai --profile debug
-greentic-operator dev detect --root /projects/ai/greentic-ai --profile debug --dry-run
+greentic-operator dev on --root /projects/ai/greenticai --profile debug
+greentic-operator dev detect --root /projects/ai/greenticai --profile debug --dry-run
 greentic-operator demo start --bundle demo-bundle --tenant default --team default
 greentic-operator demo doctor
 ```
@@ -141,7 +141,7 @@ Config (greentic.yaml) supports dev mode defaults and explicit binary overrides:
 ```yaml
 dev:
   mode: auto
-  root: /projects/ai/greentic-ai
+  root: /projects/ai/greenticai
   profile: debug
   target_dir: null
   repo_map:
@@ -200,3 +200,4 @@ Use `greentic-operator demo subscriptions` to manage bindings manually:
 These commands are handy for smoke testing provider packs and delegated scenarios without running a full demo stack.
 
 Snapshot `docs/demo-universal-subscriptions.yaml` contains a ready-to-use `greentic.demo.yaml` snippet you can drop into a bundle before running `demo start --subscriptions-mode universal_ops`.
+
