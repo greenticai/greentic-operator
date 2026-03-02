@@ -83,17 +83,18 @@ pub fn list_tenants(state: &OnboardState) -> Result<Response<Full<Bytes>>, Respo
 
             let teams_dir = entry.path().join("teams");
             if teams_dir.exists()
-                && let Ok(team_entries) = std::fs::read_dir(&teams_dir) {
-                    for team_entry in team_entries.flatten() {
-                        if team_entry
-                            .file_type()
-                            .map(|ft| ft.is_dir())
-                            .unwrap_or(false)
-                        {
-                            teams.push(team_entry.file_name().to_string_lossy().to_string());
-                        }
+                && let Ok(team_entries) = std::fs::read_dir(&teams_dir)
+            {
+                for team_entry in team_entries.flatten() {
+                    if team_entry
+                        .file_type()
+                        .map(|ft| ft.is_dir())
+                        .unwrap_or(false)
+                    {
+                        teams.push(team_entry.file_name().to_string_lossy().to_string());
                     }
                 }
+            }
 
             tenants.push(json!({
                 "tenant": tenant_name,
@@ -128,60 +129,61 @@ pub fn deployment_status(
     // Check for provider config envelopes
     let providers_dir = bundle_root.join(".providers");
     if providers_dir.exists()
-        && let Ok(entries) = std::fs::read_dir(&providers_dir) {
-            for entry in entries.flatten() {
-                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                    let provider_id = entry.file_name().to_string_lossy().to_string();
-                    // Skip internal directories (e.g. _contracts)
-                    if provider_id.starts_with('_') {
-                        continue;
-                    }
-                    // Look for config files inside (yaml, json, cbor — skip .bak)
-                    let mut config_files = Vec::new();
-                    if let Ok(config_entries) = std::fs::read_dir(entry.path()) {
-                        for config_entry in config_entries.flatten() {
-                            let name = config_entry.file_name().to_string_lossy().to_string();
-                            if name.ends_with(".bak") {
-                                continue;
-                            }
-                            if name.ends_with(".yaml")
-                                || name.ends_with(".json")
-                                || name.ends_with(".cbor")
-                            {
-                                config_files.push(name);
-                            }
-                        }
-                    }
-                    // Read metadata from config envelope
-                    let envelope_config =
-                        crate::provider_config_envelope::read_provider_config_envelope(
-                            &providers_dir,
-                            &provider_id,
-                        )
-                        .ok()
-                        .flatten()
-                        .map(|env| env.config);
-
-                    let mut entry_json = json!({
-                        "provider_id": provider_id,
-                        "configured": true,
-                        "config_files": config_files,
-                    });
-                    if let Some(ref cfg) = envelope_config {
-                        if let Some(label) = cfg.get("instance_label").and_then(Value::as_str) {
-                            entry_json["instance_label"] = Value::String(label.to_string());
-                        }
-                        if let Some(t) = cfg.get("_scope_tenant").and_then(Value::as_str) {
-                            entry_json["scope_tenant"] = Value::String(t.to_string());
-                        }
-                        if let Some(t) = cfg.get("_scope_team").and_then(Value::as_str) {
-                            entry_json["scope_team"] = Value::String(t.to_string());
-                        }
-                    }
-                    deployed.push(entry_json);
+        && let Ok(entries) = std::fs::read_dir(&providers_dir)
+    {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                let provider_id = entry.file_name().to_string_lossy().to_string();
+                // Skip internal directories (e.g. _contracts)
+                if provider_id.starts_with('_') {
+                    continue;
                 }
+                // Look for config files inside (yaml, json, cbor — skip .bak)
+                let mut config_files = Vec::new();
+                if let Ok(config_entries) = std::fs::read_dir(entry.path()) {
+                    for config_entry in config_entries.flatten() {
+                        let name = config_entry.file_name().to_string_lossy().to_string();
+                        if name.ends_with(".bak") {
+                            continue;
+                        }
+                        if name.ends_with(".yaml")
+                            || name.ends_with(".json")
+                            || name.ends_with(".cbor")
+                        {
+                            config_files.push(name);
+                        }
+                    }
+                }
+                // Read metadata from config envelope
+                let envelope_config =
+                    crate::provider_config_envelope::read_provider_config_envelope(
+                        &providers_dir,
+                        &provider_id,
+                    )
+                    .ok()
+                    .flatten()
+                    .map(|env| env.config);
+
+                let mut entry_json = json!({
+                    "provider_id": provider_id,
+                    "configured": true,
+                    "config_files": config_files,
+                });
+                if let Some(ref cfg) = envelope_config {
+                    if let Some(label) = cfg.get("instance_label").and_then(Value::as_str) {
+                        entry_json["instance_label"] = Value::String(label.to_string());
+                    }
+                    if let Some(t) = cfg.get("_scope_tenant").and_then(Value::as_str) {
+                        entry_json["scope_tenant"] = Value::String(t.to_string());
+                    }
+                    if let Some(t) = cfg.get("_scope_team").and_then(Value::as_str) {
+                        entry_json["scope_team"] = Value::String(t.to_string());
+                    }
+                }
+                deployed.push(entry_json);
             }
         }
+    }
 
     // Also check gmap for policy entries
     let gmap_path = bundle_root.join("tenants/default/tenant.gmap");

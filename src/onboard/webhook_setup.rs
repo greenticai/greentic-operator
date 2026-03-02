@@ -403,9 +403,10 @@ fn setup_webex_webhook(
             event,
         );
         if let Some(ref r) = result
-            && !r.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-                all_ok = false;
-            }
+            && !r.get("ok").and_then(Value::as_bool).unwrap_or(false)
+        {
+            all_ok = false;
+        }
         results.push(json!({
             "resource": resource,
             "event": event,

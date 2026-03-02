@@ -197,9 +197,9 @@ fn fetch_remote_registry_to_cache(bundle: &Path, reference: &str) -> anyhow::Res
             if prior_digest.as_deref() == Some(fetched.resolved_digest.as_str())
                 && let Some(existing) =
                     resolve_existing_cache_for_digest(bundle, reference, &fetched.resolved_digest)?
-                {
-                    return Ok(existing);
-                }
+            {
+                return Ok(existing);
+            }
             cache_remote_registry_file(
                 bundle,
                 reference,
@@ -216,9 +216,9 @@ fn fetch_remote_registry_to_cache(bundle: &Path, reference: &str) -> anyhow::Res
             if prior_digest.as_deref() == Some(digest.as_str())
                 && let Some(existing) =
                     resolve_existing_cache_for_digest(bundle, reference, digest.as_str())?
-                {
-                    return Ok(existing);
-                }
+            {
+                return Ok(existing);
+            }
             cache_remote_registry_file(bundle, reference, &digest, bytes)
         }
     }

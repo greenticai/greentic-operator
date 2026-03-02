@@ -159,9 +159,10 @@ fn extract_text_or_symbol(value: &CborValue, key: &str, symbol_table: &str) -> O
             let symbols = map.get(&symbols_key)?;
             if let CborValue::Map(sym_map) = symbols
                 && let Some(CborValue::Array(entries)) = sym_map.get(&table_key)
-                    && let Some(CborValue::Text(resolved)) = entries.get(idx) {
-                        return Some(resolved.clone());
-                    }
+                && let Some(CborValue::Text(resolved)) = entries.get(idx)
+            {
+                return Some(resolved.clone());
+            }
             None
         }
         _ => None,
@@ -233,9 +234,10 @@ fn collect_transcript_outputs(
             // If targeting a specific card node, check node_id match.
             if let Some(target) = target_node_id
                 && let Some(node_id) = value.get("node_id").and_then(|n| n.as_str())
-                    && node_id == target {
-                        targeted = Some(outputs.clone());
-                    }
+                && node_id == target
+            {
+                targeted = Some(outputs.clone());
+            }
         }
     }
     // Targeted node takes priority; otherwise return first card (not last).
@@ -260,22 +262,23 @@ fn parse_envelopes(
     // Handle component-adaptive-card output: AdaptiveCardResult with renderedCard.
     // Store the rendered AC JSON in metadata["adaptive_card"] (matches Teams/Slack pattern).
     if let Some(rendered_card) = value.get("renderedCard")
-        && !rendered_card.is_null() {
-            let mut reply = ingress_envelope.clone();
-            // Extract a brief title from the first body element for text fallback.
-            let title = rendered_card
-                .get("body")
-                .and_then(|b| b.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|e| e.get("text"))
-                .and_then(|t| t.as_str())
-                .unwrap_or("Adaptive Card");
-            reply.text = Some(title.to_string());
-            if let Ok(ac_json) = serde_json::to_string(rendered_card) {
-                reply.metadata.insert("adaptive_card".to_string(), ac_json);
-            }
-            return Ok(vec![reply]);
+        && !rendered_card.is_null()
+    {
+        let mut reply = ingress_envelope.clone();
+        // Extract a brief title from the first body element for text fallback.
+        let title = rendered_card
+            .get("body")
+            .and_then(|b| b.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|e| e.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("Adaptive Card");
+        reply.text = Some(title.to_string());
+        if let Ok(ac_json) = serde_json::to_string(rendered_card) {
+            reply.metadata.insert("adaptive_card".to_string(), ac_json);
         }
+        return Ok(vec![reply]);
+    }
 
     // Fallback: wrap simple text output in a reply envelope based on the ingress message.
     // Check payload.text (runner transcript format) then text then raw string.
