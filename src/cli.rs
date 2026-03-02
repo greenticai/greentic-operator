@@ -473,7 +473,7 @@ struct DemoPolicyArgs {
 #[command(
     about = "Plan/create a demo bundle with pack refs and allow rules.",
     long_about = "Builds a deterministic wizard plan first. Execution reuses the same gmap + resolver + resolved-copy lifecycle as demo allow.",
-    after_help = "Main options:\n  --mode <create|update|remove>\n  --bundle <DIR> (or provide in --qa-answers)\n\nOptional options:\n  --qa-answers <PATH>\n  --catalog-pack <ID> (repeatable)\n  --pack-ref <REF> (repeatable, oci://|repo://|store://)\n  --provider-registry <REF>\n  --locale <TAG> (default: detected from system locale)\n  --tenant <TENANT> (default: demo)\n  --team <TEAM>\n  --target <tenant[:team]> (repeatable)\n  --allow <PACK[/FLOW[/NODE]]> (repeatable)\n  --execute\n  --dry-run\n  --offline\n  --verbose\n  --run-setup"
+    after_help = "Main options:\n  --mode <create|update|remove>\n  --bundle <DIR> (or provide in --answers/--qa-answers)\n\nOptional options:\n  --answers <PATH>\n  --qa-answers <PATH> (legacy alias)\n  --emit-answers <PATH>\n  --schema-version <VER>\n  --migrate\n  --validate\n  --apply\n  --catalog-pack <ID> (repeatable)\n  --pack-ref <REF> (repeatable, oci://|repo://|store://)\n  --provider-registry <REF>\n  --locale <TAG> (default: detected from system locale)\n  --tenant <TENANT> (default: demo)\n  --team <TEAM>\n  --target <tenant[:team]> (repeatable)\n  --allow <PACK[/FLOW[/NODE]]> (repeatable)\n  --execute\n  --dry-run\n  --offline\n  --verbose\n  --run-setup"
 )]
 struct DemoWizardArgs {
     #[arg(long, value_enum, default_value_t = WizardModeArg::Create)]
@@ -481,7 +481,40 @@ struct DemoWizardArgs {
     #[arg(long, help = "Path to the demo bundle to create.")]
     bundle: Option<PathBuf>,
     #[arg(
+        long = "answers",
+        help = "AnswerDocument JSON/YAML (or legacy raw wizard answers)."
+    )]
+    answers: Option<PathBuf>,
+    #[arg(
+        long = "emit-answers",
+        help = "Write merged answers as AnswerDocument JSON."
+    )]
+    emit_answers: Option<PathBuf>,
+    #[arg(
+        long = "schema-version",
+        help = "Schema version to embed in emitted AnswerDocument."
+    )]
+    schema_version: Option<String>,
+    #[arg(
+        long = "migrate",
+        help = "Allow migrating AnswerDocument schema version when needed."
+    )]
+    migrate: bool,
+    #[arg(
+        long = "validate",
+        conflicts_with_all = ["apply", "execute"],
+        help = "Validate/plan only (no side effects)."
+    )]
+    validate: bool,
+    #[arg(
+        long = "apply",
+        conflicts_with_all = ["validate", "dry_run"],
+        help = "Apply side effects (alias of --execute)."
+    )]
+    apply: bool,
+    #[arg(
         long = "qa-answers",
+        conflicts_with = "answers",
         help = "Optional JSON/YAML answers emitted by greentic-qa."
     )]
     qa_answers: Option<PathBuf>,
@@ -545,6 +578,22 @@ enum WizardModeArg {
     Create,
     Update,
     Remove,
+}
+
+const WIZARD_ANSWER_DOC_ID: &str = "greentic-operator.wizard.demo";
+const WIZARD_ANSWER_SCHEMA_ID: &str = "greentic-operator.demo.wizard";
+const WIZARD_ANSWER_SCHEMA_VERSION: &str = "1.0.0";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct WizardAnswerDocument {
+    wizard_id: String,
+    schema_id: String,
+    schema_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    locale: Option<String>,
+    answers: JsonValue,
+    #[serde(default)]
+    locks: JsonMap<String, JsonValue>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -2485,6 +2534,7 @@ impl DemoWizardArgs {
     fn run(self) -> anyhow::Result<()> {
         let mode: wizard::WizardMode = self.mode.into();
         let effective_locale = self.locale.clone().unwrap_or_else(detect_system_locale_tag);
+        let schema_version = resolve_wizard_schema_version(self.schema_version.as_deref());
         let provider_registry_ref = self
             .provider_registry
             .clone()
@@ -2514,16 +2564,20 @@ impl DemoWizardArgs {
             .map(|entry| entry.id.clone())
             .collect::<Vec<_>>();
         let prefilled_answers = build_prefilled_wizard_answers_from_cli(&self, &effective_locale);
-        let mut answers = if let Some(path) = self.qa_answers.as_ref() {
-            load_wizard_qa_answers(path)?
+        let answers_input = self.answers.as_ref().or(self.qa_answers.as_ref());
+        let (mut answers, loaded_doc) = if let Some(path) = answers_input {
+            load_wizard_answers_input(path, &schema_version, self.migrate)?
         } else {
-            run_wizard_via_qa(
-                mode,
-                &effective_locale,
-                prefilled_answers,
-                &qa_provider_ids,
-                self.verbose,
-            )?
+            (
+                run_wizard_via_qa(
+                    mode,
+                    &effective_locale,
+                    prefilled_answers,
+                    &qa_provider_ids,
+                    self.verbose,
+                )?,
+                None,
+            )
         };
         merge_cli_overrides_into_wizard_answers(&mut answers, &self, &effective_locale);
 
@@ -2658,15 +2712,14 @@ impl DemoWizardArgs {
             access_changes,
         };
         let qa_execute = matches!(answers.execution_mode.as_deref(), Some("execute"));
-        let execute_requested = if self.execute || self.dry_run {
-            self.execute
+        let (execute_requested, dry_run) = if self.apply {
+            (true, false)
+        } else if self.validate {
+            (false, true)
+        } else if self.execute || self.dry_run {
+            (self.execute, self.dry_run || !self.execute)
         } else {
-            qa_execute
-        };
-        let dry_run = if self.execute || self.dry_run {
-            self.dry_run || !self.execute
-        } else {
-            !qa_execute
+            (qa_execute, !qa_execute)
         };
         let plan = wizard_plan_builder::build_plan(mode, &request, dry_run)?;
         wizard::print_plan_summary(&plan);
@@ -2705,11 +2758,23 @@ impl DemoWizardArgs {
         }
 
         if !execute_requested {
-            let output_path = prompt_output_answers_path()?;
-            let payload =
-                serde_json::to_string_pretty(&answers).context("serialize wizard answers")?;
-            std::fs::write(&output_path, payload)
-                .with_context(|| format!("write wizard answers {}", output_path.display()))?;
+            let output_path = if let Some(path) = self.emit_answers.as_ref() {
+                path.clone()
+            } else {
+                prompt_output_answers_path()?
+            };
+            let mut answer_doc = wizard_answer_document_from_answers(
+                &answers,
+                answers
+                    .locale
+                    .clone()
+                    .or_else(|| Some(effective_locale.clone())),
+                &schema_version,
+            )?;
+            if let Some(previous) = loaded_doc.as_ref() {
+                answer_doc.locks = previous.locks.clone();
+            }
+            write_wizard_answer_document(&output_path, &answer_doc)?;
             println!(
                 "{} {}",
                 operator_i18n::tr("cli.wizard.saved_answers", "saved wizard answers:"),
@@ -2894,13 +2959,103 @@ fn parse_yes_no_token(token: &str) -> Option<bool> {
     }
 }
 
-fn load_wizard_qa_answers(path: &Path) -> anyhow::Result<WizardQaAnswers> {
+fn resolve_wizard_schema_version(override_version: Option<&str>) -> String {
+    override_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(WIZARD_ANSWER_SCHEMA_VERSION)
+        .to_string()
+}
+
+fn load_wizard_answers_input(
+    path: &Path,
+    expected_schema_version: &str,
+    allow_migrate: bool,
+) -> anyhow::Result<(WizardQaAnswers, Option<WizardAnswerDocument>)> {
     let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("read qa answers {}", path.display()))?;
+        .with_context(|| format!("read wizard answers {}", path.display()))?;
     let value: JsonValue = serde_json::from_str(&raw)
         .or_else(|_| serde_yaml_bw::from_str(&raw))
-        .with_context(|| format!("parse qa answers {}", path.display()))?;
-    parse_wizard_qa_answers_value(value)
+        .with_context(|| format!("parse wizard answers {}", path.display()))?;
+    parse_wizard_answers_input_value(value, expected_schema_version, allow_migrate)
+}
+
+fn parse_wizard_answers_input_value(
+    value: JsonValue,
+    expected_schema_version: &str,
+    allow_migrate: bool,
+) -> anyhow::Result<(WizardQaAnswers, Option<WizardAnswerDocument>)> {
+    if let Ok(mut doc) = serde_json::from_value::<WizardAnswerDocument>(value.clone()) {
+        ensure_wizard_answer_ids(&doc)?;
+        if doc.schema_version != expected_schema_version {
+            if allow_migrate {
+                doc = migrate_wizard_answer_document(doc, expected_schema_version)?;
+            } else {
+                return Err(anyhow!(
+                    "wizard answers schema_version={} does not match expected {}; re-run with --migrate",
+                    doc.schema_version,
+                    expected_schema_version
+                ));
+            }
+        }
+        let qa = parse_wizard_qa_answers_value(doc.answers.clone())?;
+        return Ok((qa, Some(doc)));
+    }
+    let qa = parse_wizard_qa_answers_value(value)?;
+    Ok((qa, None))
+}
+
+fn ensure_wizard_answer_ids(doc: &WizardAnswerDocument) -> anyhow::Result<()> {
+    if doc.wizard_id.trim().is_empty() {
+        return Err(anyhow!("wizard answers missing wizard_id"));
+    }
+    if doc.schema_id.trim().is_empty() {
+        return Err(anyhow!("wizard answers missing schema_id"));
+    }
+    if doc.schema_version.trim().is_empty() {
+        return Err(anyhow!("wizard answers missing schema_version"));
+    }
+    Ok(())
+}
+
+fn migrate_wizard_answer_document(
+    mut doc: WizardAnswerDocument,
+    expected_schema_version: &str,
+) -> anyhow::Result<WizardAnswerDocument> {
+    let from = semver::Version::parse(doc.schema_version.trim())
+        .with_context(|| format!("parse source schema_version {}", doc.schema_version))?;
+    let to = semver::Version::parse(expected_schema_version)
+        .with_context(|| format!("parse target schema_version {expected_schema_version}"))?;
+    if from > to {
+        return Err(anyhow!(
+            "wizard answers schema_version={} is newer than supported {}",
+            doc.schema_version,
+            expected_schema_version
+        ));
+    }
+    doc.schema_version = expected_schema_version.to_string();
+    Ok(doc)
+}
+
+fn wizard_answer_document_from_answers(
+    answers: &WizardQaAnswers,
+    locale: Option<String>,
+    schema_version: &str,
+) -> anyhow::Result<WizardAnswerDocument> {
+    Ok(WizardAnswerDocument {
+        wizard_id: WIZARD_ANSWER_DOC_ID.to_string(),
+        schema_id: WIZARD_ANSWER_SCHEMA_ID.to_string(),
+        schema_version: schema_version.to_string(),
+        locale,
+        answers: serde_json::to_value(answers).context("serialize wizard answers payload")?,
+        locks: JsonMap::new(),
+    })
+}
+
+fn write_wizard_answer_document(path: &Path, doc: &WizardAnswerDocument) -> anyhow::Result<()> {
+    let payload = serde_json::to_string_pretty(doc).context("serialize wizard answer document")?;
+    std::fs::write(path, payload)
+        .with_context(|| format!("write wizard answers {}", path.display()))
 }
 
 fn parse_wizard_qa_answers_value(value: JsonValue) -> anyhow::Result<WizardQaAnswers> {
@@ -3461,12 +3616,12 @@ fn build_prefilled_wizard_answers_from_cli(args: &DemoWizardArgs, locale: &str) 
             JsonValue::Array(vec![JsonValue::Object(target)]),
         );
     }
-    if args.execute {
+    if args.apply || args.execute {
         map.insert(
             "execution_mode".to_string(),
             JsonValue::String("execute".to_string()),
         );
-    } else if args.dry_run {
+    } else if args.validate || args.dry_run {
         map.insert(
             "execution_mode".to_string(),
             JsonValue::String("dry run".to_string()),
@@ -3517,6 +3672,11 @@ fn merge_cli_overrides_into_wizard_answers(
         answers.locale = Some(value.clone());
     } else if answers.locale.is_none() {
         answers.locale = Some(locale.to_string());
+    }
+    if args.apply || args.execute {
+        answers.execution_mode = Some("execute".to_string());
+    } else if args.validate || args.dry_run {
+        answers.execution_mode = Some("dry run".to_string());
     }
 }
 

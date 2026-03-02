@@ -71,6 +71,18 @@ fn build_create_answers(path: &Path, bundle: &Path, pack_path: &Path) {
     std::fs::write(path, serde_json::to_string_pretty(&payload).unwrap()).unwrap();
 }
 
+fn build_answer_document(path: &Path, answers: serde_json::Value, schema_version: &str) {
+    let payload = json!({
+        "wizard_id": "greentic-operator.wizard.demo",
+        "schema_id": "greentic-operator.demo.wizard",
+        "schema_version": schema_version,
+        "locale": "en",
+        "answers": answers,
+        "locks": {}
+    });
+    std::fs::write(path, serde_json::to_string_pretty(&payload).unwrap()).unwrap();
+}
+
 #[test]
 fn wizard_dry_run_writes_answers_then_replay_executes_bundle() {
     let temp = tempfile::tempdir().unwrap();
@@ -106,7 +118,20 @@ fn wizard_dry_run_writes_answers_then_replay_executes_bundle() {
     let replay_json: serde_json::Value = serde_json::from_str(&replay_raw).unwrap();
     assert_eq!(
         replay_json
-            .get("execution_mode")
+            .get("wizard_id")
+            .and_then(serde_json::Value::as_str),
+        Some("greentic-operator.wizard.demo")
+    );
+    assert_eq!(
+        replay_json
+            .get("schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some("1.0.0")
+    );
+    assert_eq!(
+        replay_json
+            .get("answers")
+            .and_then(|value| value.get("execution_mode"))
             .and_then(serde_json::Value::as_str),
         Some("dry run")
     );
@@ -115,7 +140,7 @@ fn wizard_dry_run_writes_answers_then_replay_executes_bundle() {
         "wizard".to_string(),
         "--mode".to_string(),
         "create".to_string(),
-        "--qa-answers".to_string(),
+        "--answers".to_string(),
         saved_answers.display().to_string(),
         "--provider-registry".to_string(),
         provider_registry_fixture(),
@@ -178,7 +203,7 @@ fn wizard_execute_existing_bundle_abort_and_overwrite_paths() {
         "wizard".to_string(),
         "--mode".to_string(),
         "create".to_string(),
-        "--qa-answers".to_string(),
+        "--answers".to_string(),
         answers.display().to_string(),
         "--provider-registry".to_string(),
         provider_registry_fixture(),
@@ -221,4 +246,61 @@ fn wizard_execute_existing_bundle_abort_and_overwrite_paths() {
         "bundle should be recreated when overwrite=yes"
     );
     assert!(bundle.join("default.gtpack").exists());
+}
+
+#[test]
+fn wizard_migrate_accepts_older_schema_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let pack_path = root.join("local-pack.gtpack");
+    write_test_pack(&pack_path, "local-wizard-pack").unwrap();
+    let bundle = root.join("bundle");
+    let answers_payload = json!({
+        "bundle_path": bundle.display().to_string(),
+        "bundle_name": "wizard path test",
+        "locale": "en",
+        "tenant": "demo",
+        "team": "default",
+        "pack_refs": [
+            {
+                "pack_ref": pack_path.display().to_string(),
+                "access_scope": "all_tenants",
+                "make_default_pack": "y"
+            }
+        ],
+        "providers": [],
+        "execution_mode": "dry run"
+    });
+    let answers_doc = root.join("answers-doc.json");
+    build_answer_document(&answers_doc, answers_payload, "0.9.0");
+    let migrated_out = root.join("migrated-answers.json");
+
+    let args = vec![
+        "wizard".to_string(),
+        "--mode".to_string(),
+        "create".to_string(),
+        "--answers".to_string(),
+        answers_doc.display().to_string(),
+        "--migrate".to_string(),
+        "--validate".to_string(),
+        "--emit-answers".to_string(),
+        migrated_out.display().to_string(),
+        "--provider-registry".to_string(),
+        provider_registry_fixture(),
+    ];
+    let output = wizard_command(&args, None);
+    assert!(
+        output.status.success(),
+        "migrate validate failed stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let raw = std::fs::read_to_string(migrated_out).unwrap();
+    let migrated: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        migrated
+            .get("schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some("1.0.0")
+    );
 }
