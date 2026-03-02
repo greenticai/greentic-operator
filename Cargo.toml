@@ -79,11 +79,6 @@ tempfile = "3.10"
 indexmap = "2"
 semver = "1"
 
-[patch.crates-io]
-greentic-runner-host = { path = "../greentic-runner/crates/greentic-runner-host" }
-greentic-runner-desktop = { path = "../greentic-runner/crates/greentic-runner-desktop" }
-qa-spec = { path = "../greentic-qa/crates/qa-spec" }
-
 [workspace]
 members = [
     "secret_name",

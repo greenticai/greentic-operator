@@ -402,11 +402,10 @@ fn setup_webex_webhook(
             resource,
             event,
         );
-        if let Some(ref r) = result {
-            if !r.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        if let Some(ref r) = result
+            && !r.get("ok").and_then(Value::as_bool).unwrap_or(false) {
                 all_ok = false;
             }
-        }
         results.push(json!({
             "resource": resource,
             "event": event,
@@ -536,7 +535,7 @@ fn webex_create_webhook_with_resource(
             );
 
             Some(json!({
-                "ok": status >= 200 && status < 300,
+                "ok": (200..300).contains(&status),
                 "webhook_url": target_url,
                 "webhook_id": hook_id,
                 "action": "create",
@@ -585,7 +584,7 @@ fn webex_update_webhook(
             );
 
             Some(json!({
-                "ok": status >= 200 && status < 300,
+                "ok": (200..300).contains(&status),
                 "webhook_url": target_url,
                 "webhook_id": webhook_id,
                 "action": "update",

@@ -194,13 +194,12 @@ fn fetch_remote_registry_to_cache(bundle: &Path, reference: &str) -> anyhow::Res
     let prior_digest = cached_digest_for_reference(bundle, reference)?;
     match rt.block_on(fetcher.fetch_pack_to_cache(&mapped)) {
         Ok(fetched) => {
-            if prior_digest.as_deref() == Some(fetched.resolved_digest.as_str()) {
-                if let Some(existing) =
+            if prior_digest.as_deref() == Some(fetched.resolved_digest.as_str())
+                && let Some(existing) =
                     resolve_existing_cache_for_digest(bundle, reference, &fetched.resolved_digest)?
                 {
                     return Ok(existing);
                 }
-            }
             cache_remote_registry_file(
                 bundle,
                 reference,
@@ -214,13 +213,12 @@ fn fetch_remote_registry_to_cache(bundle: &Path, reference: &str) -> anyhow::Res
                 .block_on(fetch_registry_bytes_via_oci(&mapped))
                 .with_context(|| format!("fetch provider registry {reference}"))
                 .with_context(|| format!("primary fetch error: {primary_err}"))?;
-            if prior_digest.as_deref() == Some(digest.as_str()) {
-                if let Some(existing) =
+            if prior_digest.as_deref() == Some(digest.as_str())
+                && let Some(existing) =
                     resolve_existing_cache_for_digest(bundle, reference, digest.as_str())?
                 {
                     return Ok(existing);
                 }
-            }
             cache_remote_registry_file(bundle, reference, &digest, bytes)
         }
     }

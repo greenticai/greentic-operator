@@ -82,8 +82,8 @@ pub fn list_tenants(state: &OnboardState) -> Result<Response<Full<Bytes>>, Respo
             let mut teams = Vec::new();
 
             let teams_dir = entry.path().join("teams");
-            if teams_dir.exists() {
-                if let Ok(team_entries) = std::fs::read_dir(&teams_dir) {
+            if teams_dir.exists()
+                && let Ok(team_entries) = std::fs::read_dir(&teams_dir) {
                     for team_entry in team_entries.flatten() {
                         if team_entry
                             .file_type()
@@ -94,7 +94,6 @@ pub fn list_tenants(state: &OnboardState) -> Result<Response<Full<Bytes>>, Respo
                         }
                     }
                 }
-            }
 
             tenants.push(json!({
                 "tenant": tenant_name,
@@ -128,8 +127,8 @@ pub fn deployment_status(
 
     // Check for provider config envelopes
     let providers_dir = bundle_root.join(".providers");
-    if providers_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&providers_dir) {
+    if providers_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&providers_dir) {
             for entry in entries.flatten() {
                 if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                     let provider_id = entry.file_name().to_string_lossy().to_string();
@@ -183,7 +182,6 @@ pub fn deployment_status(
                 }
             }
         }
-    }
 
     // Also check gmap for policy entries
     let gmap_path = bundle_root.join("tenants/default/tenant.gmap");

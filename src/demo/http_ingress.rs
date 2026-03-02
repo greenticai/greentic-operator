@@ -406,11 +406,11 @@ fn route_messaging_envelopes(
                             route_to_card
                         ),
                     );
-                    run_app_flow_safe(bundle, ctx, &app_pack_path, &pack_info, &flow, envelope)
+                    run_app_flow_safe(bundle, ctx, &app_pack_path, &pack_info, flow, envelope)
                 }
             }
         } else {
-            run_app_flow_safe(bundle, ctx, &app_pack_path, &pack_info, &flow, envelope)
+            run_app_flow_safe(bundle, ctx, &app_pack_path, &pack_info, flow, envelope)
         };
 
         for out_envelope in outputs {

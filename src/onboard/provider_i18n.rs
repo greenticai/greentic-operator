@@ -58,11 +58,7 @@ pub fn load_locale_file(dir: &Path, locale: &str) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-/// Load disk files and merge with WASM english via `qa_spec::merge_i18n_layers`.
-///
-/// This is the convenience function that combines I/O (reading files) with
-/// the merge logic from greentic-qa. Operator calls this; merge logic lives
-/// in qa-spec.
+/// Load disk files and merge with WASM english.
 pub fn load_and_merge(
     wasm_english: &BTreeMap<String, String>,
     locale: &str,
@@ -79,7 +75,25 @@ pub fn load_and_merge(
         None
     };
 
-    qa_spec::merge_i18n_layers(disk_base, wasm_english, locale_map.as_ref())
+    merge_i18n_layers_local(disk_base, wasm_english, locale_map.as_ref())
+}
+
+fn merge_i18n_layers_local(
+    mut disk_base: BTreeMap<String, String>,
+    wasm_english: &BTreeMap<String, String>,
+    locale_map: Option<&BTreeMap<String, String>>,
+) -> BTreeMap<String, String> {
+    for (key, value) in wasm_english {
+        disk_base.insert(key.clone(), value.clone());
+    }
+    if let Some(locale) = locale_map {
+        for (key, value) in locale {
+            if disk_base.contains_key(key) {
+                disk_base.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    disk_base
 }
 
 #[cfg(test)]

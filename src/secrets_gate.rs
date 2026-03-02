@@ -84,18 +84,15 @@ impl SecretsManager for LoggingSecretsManager {
                             "WASM secrets read fallback: team-specific not found, trying uri={fallback_path}",
                         ),
                     );
-                    match self.inner.read(&fallback_path).await {
-                        Ok(value) => {
-                            operator_log::debug(
-                                module_path!(),
-                                format!(
-                                    "WASM secrets read fallback resolved uri={fallback_path}; value={}",
-                                    SecretValue::new(value.as_slice()),
-                                ),
-                            );
-                            return Ok(value);
-                        }
-                        Err(_) => {}
+                    if let Ok(value) = self.inner.read(&fallback_path).await {
+                        operator_log::debug(
+                            module_path!(),
+                            format!(
+                                "WASM secrets read fallback resolved uri={fallback_path}; value={}",
+                                SecretValue::new(value.as_slice()),
+                            ),
+                        );
+                        return Ok(value);
                     }
                 }
                 Err(err)
