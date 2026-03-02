@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "Vilket team-id kan få åtkomst till den här applikationen?",
   "cli.qa.pack_ref.tenant_id_title": "Vilket tenant-id kan få åtkomst till den här applikationen?",
   "cli.qa.pack_ref_field_title": "Paketreferens (t.ex. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "Vill du lägga till ett applikationspaket? [Y,n]",
   "cli.qa.providers.add_prompt": "Vill du lägga till leverantörer (t.ex. meddelanden, händelser, osv)? [Y,n]",
   "cli.qa.select_number_or_value": "Välj nummer eller värde:",

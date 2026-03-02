@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "이 애플리케이션에 접근할 수 있는 팀 id는 무엇인가요?",
   "cli.qa.pack_ref.tenant_id_title": "이 애플리케이션에 접근할 수 있는 테넌트 id는 무엇인가요?",
   "cli.qa.pack_ref_field_title": "Pack 참조(예: /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "애플리케이션 pack을 추가하시겠습니까? [Y,n]",
   "cli.qa.providers.add_prompt": "provider(예: messaging, events 등)를 추가하시겠습니까? [Y,n]",
   "cli.qa.select_number_or_value": "번호 또는 값을 선택하세요:",

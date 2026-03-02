@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "Какъв е team id, който може да има достъп до това приложение?",
   "cli.qa.pack_ref.tenant_id_title": "Какъв е tenant id, който може да има достъп до това приложение?",
   "cli.qa.pack_ref_field_title": "Референция към пакет (напр. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "Искате ли да добавите пакет за приложение? [Y,n]",
   "cli.qa.providers.add_prompt": "Искате ли да добавите доставчици (напр. съобщения, събития и др.)? [Y,n]",
   "cli.qa.select_number_or_value": "Изберете номер или стойност:",

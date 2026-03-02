@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "ਇਸ ਐਪਲੀਕੇਸ਼ਨ ਤੱਕ ਪਹੁੰਚ ਵਾਲੀ team ਦੀ id ਕੀ ਹੈ?",
   "cli.qa.pack_ref.tenant_id_title": "ਇਸ ਐਪਲੀਕੇਸ਼ਨ ਤੱਕ ਪਹੁੰਚ ਵਾਲੇ tenant ਦੀ id ਕੀ ਹੈ?",
   "cli.qa.pack_ref_field_title": "Pack ਰੈਫ਼ਰੈਂਸ (ਜਿਵੇਂ /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "ਕੀ ਤੁਸੀਂ ਇੱਕ application pack ਸ਼ਾਮਲ ਕਰਨਾ ਚਾਹੁੰਦੇ ਹੋ? [Y,n]",
   "cli.qa.providers.add_prompt": "ਕੀ ਤੁਸੀਂ providers (ਜਿਵੇਂ messaging, events, ਆਦਿ) ਸ਼ਾਮਲ ਕਰਨਾ ਚਾਹੁੰਦੇ ਹੋ? [Y,n]",
   "cli.qa.select_number_or_value": "ਨੰਬਰ ਜਾਂ ਮੁੱਲ ਚੁਣੋ:",

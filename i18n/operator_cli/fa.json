@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "شناسه team که می‌تواند به این برنامه دسترسی داشته باشد چیست؟",
   "cli.qa.pack_ref.tenant_id_title": "شناسه tenant که می‌تواند به این برنامه دسترسی داشته باشد چیست؟",
   "cli.qa.pack_ref_field_title": "ارجاع پکیج (مثلاً /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "می‌خواهید یک پکیج برنامه اضافه کنید؟ [Y,n]",
   "cli.qa.providers.add_prompt": "می‌خواهید providerها (مثل پیام‌رسانی، رویدادها و غیره) را اضافه کنید؟ [Y,n]",
   "cli.qa.select_number_or_value": "شماره یا مقدار را انتخاب کنید:",

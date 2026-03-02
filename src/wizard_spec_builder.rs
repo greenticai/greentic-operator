@@ -114,6 +114,17 @@ fn create_validation_form(provider_ids: &[String]) -> Value {
                 }
             },
             {
+                "id": "custom_provider_refs",
+                "type": "list",
+                "title": "Non-well-known provider references",
+                "required": false,
+                "list": {
+                    "fields": [
+                        { "id": "pack_ref", "type": "string", "title": "Provider pack reference (e.g. /path/to/provider.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)", "required": true }
+                    ]
+                }
+            },
+            {
                 "id": "execution_mode",
                 "type": "enum",
                 "title": "Execution mode",
@@ -215,6 +226,17 @@ fn update_validation_form(provider_ids: &[String]) -> Value {
                 "required": false,
                 "list": {
                     "fields": [provider_field.clone()]
+                }
+            },
+            {
+                "id": "custom_provider_refs",
+                "type": "list",
+                "title": "Non-well-known provider references to enable",
+                "required": false,
+                "list": {
+                    "fields": [
+                        { "id": "pack_ref", "type": "string", "title": "Provider pack reference (e.g. /path/to/provider.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)", "required": true }
+                    ]
                 }
             },
             {

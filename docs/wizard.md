@@ -21,6 +21,8 @@
 - `--catalog-pack <ID>` repeatable catalog ids
 - `--catalog-file <PATH>` optional catalog file (JSON/YAML)
 - `--pack-ref <REF>` repeatable custom refs (`oci://`, `repo://`, `store://`)
+- `--provider-registry <REF>` provider registry override (`oci://`, `repo://`, `store://`, `file://`, local path)
+- `--provider-registry-refresh` refresh provider registry from remote source when possible (fallback to cache on failure)
 - `--tenant <TENANT>` tenant for allow rules (default: `demo`)
 - `--team <TEAM>` optional team scope
 - `--target <tenant[:team]>` repeatable tenant/team targets (overrides single tenant/team pair)
@@ -34,10 +36,14 @@
 
 Catalog returns references only. Fetching happens in execution through distributor-client.
 
+Wizard also supports non-well-known provider refs through QA answers (`custom_provider_refs`) and merges them with `--pack-ref` values.
+
 Catalog source options:
 - built-in static list (default)
 - custom file via `--catalog-file`
 - custom file via `GREENTIC_OPERATOR_WIZARD_CATALOG`
+- provider registry override via `--provider-registry` or `GTC_PROVIDER_REGISTRY_REF` (default: `oci://ghcr.io/greenticai/registries/providers:latest`)
+- remote registry refresh via `--provider-registry-refresh` (when not `--offline`)
 
 ## Pack resolution
 

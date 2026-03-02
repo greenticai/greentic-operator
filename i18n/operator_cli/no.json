@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "Hva er team-id-en som kan få tilgang til denne applikasjonen?",
   "cli.qa.pack_ref.tenant_id_title": "Hva er leietaker-id-en som kan få tilgang til denne applikasjonen?",
   "cli.qa.pack_ref_field_title": "Pakkereferanse (f.eks. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "Vil du legge til en applikasjonspakke? [Y,n]",
   "cli.qa.providers.add_prompt": "Vil du legge til leverandører (f.eks. meldinger, hendelser osv.)? [Y,n]",
   "cli.qa.select_number_or_value": "Velg nummer eller verdi:",

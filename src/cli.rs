@@ -491,7 +491,7 @@ struct DemoPolicyArgs {
 #[command(
     about = "Plan/create a demo bundle with pack refs and allow rules.",
     long_about = "Builds a deterministic wizard plan first. Execution reuses the same gmap + resolver + resolved-copy lifecycle as demo allow.",
-    after_help = "Main options:\n  --mode <create|update|remove>\n  --bundle <DIR> (or provide in --qa-answers)\n\nOptional options:\n  --qa-answers <PATH>\n  --catalog-pack <ID> (repeatable)\n  --pack-ref <REF> (repeatable, oci://|repo://|store://)\n  --provider-registry <REF>\n  --locale <TAG> (default: detected from system locale)\n  --tenant <TENANT> (default: demo)\n  --team <TEAM>\n  --target <tenant[:team]> (repeatable)\n  --allow <PACK[/FLOW[/NODE]]> (repeatable)\n  --execute\n  --dry-run\n  --offline\n  --verbose\n  --run-setup"
+    after_help = "Main options:\n  --mode <create|update|remove>\n  --bundle <DIR> (or provide in --qa-answers)\n\nOptional options:\n  --qa-answers <PATH>\n  --catalog-pack <ID> (repeatable)\n  --pack-ref <REF> (repeatable, oci://|repo://|store://)\n  --provider-registry <REF>\n  --provider-registry-refresh\n  --locale <TAG> (default: detected from system locale)\n  --tenant <TENANT> (default: demo)\n  --team <TEAM>\n  --target <tenant[:team]> (repeatable)\n  --allow <PACK[/FLOW[/NODE]]> (repeatable)\n  --execute\n  --dry-run\n  --offline\n  --verbose\n  --run-setup"
 )]
 struct DemoWizardArgs {
     #[arg(long, value_enum, default_value_t = WizardModeArg::Create)]
@@ -517,9 +517,14 @@ struct DemoWizardArgs {
     pack_refs: Vec<String>,
     #[arg(
         long = "provider-registry",
-        help = "Provider registry override (file://<path> or local path)."
+        help = "Provider registry override (oci://, repo://, store://, file://<path>, or local path)."
     )]
     provider_registry: Option<String>,
+    #[arg(
+        long = "provider-registry-refresh",
+        help = "Refresh provider registry from remote source when possible (falls back to cache on failure)."
+    )]
+    provider_registry_refresh: bool,
     #[arg(long, default_value = "demo", help = "Tenant for allow rules.")]
     tenant: String,
     #[arg(long, help = "Optional team for allow rules.")]
@@ -600,6 +605,8 @@ struct WizardQaAnswers {
     #[serde(default)]
     providers: Vec<WizardProviderAnswer>,
     #[serde(default)]
+    custom_provider_refs: Vec<WizardCustomProviderRefAnswer>,
+    #[serde(default)]
     update_ops: Vec<WizardUpdateOpAnswer>,
     #[serde(default)]
     packs_remove: Vec<WizardPackRemoveAnswer>,
@@ -660,6 +667,13 @@ enum WizardProviderAnswer {
         provider_id: Option<String>,
         id: Option<String>,
     },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+enum WizardCustomProviderRefAnswer {
+    Ref(String),
+    Item { pack_ref: String },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2692,6 +2706,7 @@ impl DemoWizardArgs {
             }),
             Some(provider_registry_ref.as_str()),
             self.offline,
+            self.provider_registry_refresh,
             &qa_catalog_bundle_hint,
         )?;
         let qa_catalog_entries = {
@@ -2734,6 +2749,7 @@ impl DemoWizardArgs {
             }),
             Some(provider_registry_ref.as_str()),
             self.offline,
+            self.provider_registry_refresh,
             &bundle,
         )?;
 
@@ -2766,6 +2782,9 @@ impl DemoWizardArgs {
             .collect::<std::collections::BTreeMap<_, _>>();
         let mut refs = normalize_pack_refs(&answers.pack_refs);
         refs.extend(self.pack_refs.clone());
+        refs.extend(normalize_custom_provider_refs(
+            &answers.custom_provider_refs,
+        ));
         let provider_ids = normalize_provider_ids(&answers.providers);
         for provider_id in &provider_ids {
             if let Some(item) = by_id.get(provider_id) {
@@ -3527,6 +3546,10 @@ fn localized_list_field_title(question_id: &str, field_id: &str, fallback: &str)
             "cli.qa.pack_ref_field_title",
             "Pack reference (e.g. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
         ),
+        ("custom_provider_refs", "pack_ref") => operator_i18n::tr(
+            "cli.qa.pack_ref_field_title",
+            "Pack reference (e.g. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+        ),
         ("pack_refs", "access_scope") => operator_i18n::tr(
             "cli.qa.pack_ref.access_scope_title",
             "Who can access this application?",
@@ -3602,6 +3625,13 @@ fn custom_list_add_prompt(question_id: &str) -> Option<(String, bool)> {
                 "Do you want to add providers (e.g. messaging, events, etc)? [Y,n]",
             ),
             true,
+        )),
+        "custom_provider_refs" => Some((
+            operator_i18n::tr(
+                "cli.qa.custom_provider_refs.add_prompt",
+                "Do you want to add a non-well-known provider by pack reference? [y,N]",
+            ),
+            false,
         )),
         _ => None,
     }
@@ -3948,6 +3978,17 @@ fn normalize_provider_ids(values: &[WizardProviderAnswer]) -> Vec<String> {
                 .or_else(|| id.clone())
                 .filter(|value| !value.trim().is_empty()),
         })
+        .collect()
+}
+
+fn normalize_custom_provider_refs(values: &[WizardCustomProviderRefAnswer]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| match value {
+            WizardCustomProviderRefAnswer::Ref(raw) => raw.clone(),
+            WizardCustomProviderRefAnswer::Item { pack_ref } => pack_ref.clone(),
+        })
+        .filter(|value| !value.trim().is_empty())
         .collect()
 }
 
@@ -7262,5 +7303,24 @@ mod tests {
         let value = localized_list_field_title("pack_refs", "pack_ref", "fallback");
         assert!(!value.is_empty());
         assert_ne!(value, "fallback");
+    }
+
+    #[test]
+    fn normalize_custom_provider_refs_collects_non_empty_values() {
+        let values = vec![
+            WizardCustomProviderRefAnswer::Ref("".to_string()),
+            WizardCustomProviderRefAnswer::Ref("oci://ghcr.io/acme/providers/custom:1".to_string()),
+            WizardCustomProviderRefAnswer::Item {
+                pack_ref: "repo://messaging/providers/custom@latest".to_string(),
+            },
+        ];
+        let refs = normalize_custom_provider_refs(&values);
+        assert_eq!(
+            refs,
+            vec![
+                "oci://ghcr.io/acme/providers/custom:1".to_string(),
+                "repo://messaging/providers/custom@latest".to_string()
+            ]
+        );
     }
 }

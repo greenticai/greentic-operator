@@ -147,6 +147,7 @@
   "cli.main.more_info": "For more information, try '--help'.",
   "cli.main.usage_label": "Usage:",
   "cli.qa.pack_ref_field_title": "Pack reference (e.g. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.main.help.tagline": "Greentic operator tooling",
   "cli.main.help.usage_label": "Usage:",
   "cli.main.help.commands_header": "Commands:",

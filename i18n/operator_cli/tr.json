@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "Bu uygulamaya erişebilen ekibin team id'si nedir?",
   "cli.qa.pack_ref.tenant_id_title": "Bu uygulamaya erişebilen tenant id nedir?",
   "cli.qa.pack_ref_field_title": "Paket referansı (örn. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "Bir uygulama paketi eklemek istiyor musunuz? [Y,n]",
   "cli.qa.providers.add_prompt": "Sağlayıcılar (örn. mesajlaşma, etkinlikler vb.) eklemek istiyor musunuz? [Y,n]",
   "cli.qa.select_number_or_value": "Numara veya değer seçin:",

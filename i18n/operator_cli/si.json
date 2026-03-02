@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "මෙම යෙදුමට ප්‍රවේශ විය හැකි team id එක කුමක්ද?",
   "cli.qa.pack_ref.tenant_id_title": "මෙම යෙදුමට ප්‍රවේශ විය හැකි tenant id එක කුමක්ද?",
   "cli.qa.pack_ref_field_title": "Pack reference (උදා: /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "ඔබට application pack එකක් එක් කිරීමට අවශ්‍යද? [Y,n]",
   "cli.qa.providers.add_prompt": "ඔබට providers (උදා: messaging, events, etc) එක් කිරීමට අවශ්‍යද? [Y,n]",
   "cli.qa.select_number_or_value": "අංකය හෝ අගය තෝරන්න:",

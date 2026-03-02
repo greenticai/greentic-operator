@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "Mikä on tämän sovelluksen käyttöoikeuden omaavan tiimin id?",
   "cli.qa.pack_ref.tenant_id_title": "Mikä on tämän sovelluksen käyttöoikeuden omaavan tenantin id?",
   "cli.qa.pack_ref_field_title": "Pakettiviite (esim. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "Haluatko lisätä sovelluspaketin? [Y,n]",
   "cli.qa.providers.add_prompt": "Haluatko lisätä palveluntarjoajia (esim. messaging, events, jne)? [Y,n]",
   "cli.qa.select_number_or_value": "Valitse numero tai arvo:",

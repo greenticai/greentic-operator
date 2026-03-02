@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "team id ທີ່ສາມາດເຂົ້າເຖິງແອັບພລິເຄຊັນນີ້ແມ່ນຫຍັງ?",
   "cli.qa.pack_ref.tenant_id_title": "tenant id ທີ່ສາມາດເຂົ້າເຖິງແອັບພລິເຄຊັນນີ້ແມ່ນຫຍັງ?",
   "cli.qa.pack_ref_field_title": "ການອ້າງອີງ Pack (ຕົວຢ່າງ /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "ທ່ານຕ້ອງການເພີ່ມ application pack ຫຼືບໍ? [Y,n]",
   "cli.qa.providers.add_prompt": "ທ່ານຕ້ອງການເພີ່ມ providers (ເຊັ່ນ messaging, events, ແລະອື່ນໆ) ຫຼືບໍ? [Y,n]",
   "cli.qa.select_number_or_value": "ເລືອກເລກ ຫຼື ຄ່າ:",

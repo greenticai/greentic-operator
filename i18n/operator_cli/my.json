@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "ဤ application ကို access လုပ်နိုင်သော team id ကဘာလဲ?",
   "cli.qa.pack_ref.tenant_id_title": "ဤ application ကို access လုပ်နိုင်သော tenant id ကဘာလဲ?",
   "cli.qa.pack_ref_field_title": "Pack reference (ဥပမာ /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "application pack တစ်ခု ထည့်ချင်ပါသလား? [Y,n]",
   "cli.qa.providers.add_prompt": "providers (ဥပမာ messaging, events, စသည်) ထည့်ချင်ပါသလား? [Y,n]",
   "cli.qa.select_number_or_value": "နံပါတ် သို့မဟုတ် value ကို ရွေးပါ:",
