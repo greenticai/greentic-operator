@@ -55,9 +55,17 @@ Fetched packs are copied into `bundle/packs/*.gtpack` with deterministic names.
 Wizard plan includes `ApplyPackSetup` as a high-level step.
 
 When `--run-setup` is enabled, wizard:
-- collects answers per selected pack using each pack’s declared setup spec (`collect_setup_answers`)
-- builds a preloaded answers map keyed by selected `pack_id`
-- invokes existing setup machinery (`run_domain_command` with `DomainAction::Setup`) for messaging/events/secrets domains, filtered to selected providers only
+- builds a `FormSpec` for each selected pack via `qa_setup_wizard::run_qa_setup()`. The FormSpec is constructed from one of two sources (checked in order):
+  1. A WASM component `qa-spec` op, if the provider supports it (converted by `qa_bridge::provider_qa_to_form_spec`).
+  2. A legacy `assets/setup.yaml` inside the `.gtpack` (converted by `setup_to_formspec::setup_spec_to_form_spec`).
+- collects answers per selected pack using the FormSpec-driven wizard. In interactive mode the wizard prompts for each question with type hints, secret masking, constraint validation (e.g. URL patterns), and choice enumeration. In non-interactive mode pre-supplied answers from `--setup-input` are validated against the FormSpec.
+- validates all answers against the FormSpec (required fields, constraint patterns, choice membership).
+- builds a preloaded answers map keyed by selected `pack_id`.
+- invokes existing setup machinery (`run_domain_command` with `DomainAction::Setup`) for messaging/events/secrets domains, filtered to selected providers only.
+
+After apply-answers completes, the wizard calls `qa_persist::persist_qa_results()` which:
+- extracts secret fields (identified by `FormSpec.questions[].secret == true`) and writes them to the dev secrets store via `DevStore`.
+- writes remaining non-secret fields to the provider config envelope, filtering out any secret values.
 
 `remove` mode skips setup execution.
 

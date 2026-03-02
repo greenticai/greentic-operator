@@ -377,6 +377,24 @@ fn manifest_pack_id(manifest: &JsonValue) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
+        .or_else(|| resolve_symbol_pack_id(manifest))
+}
+
+/// Resolve pack_id when stored as a symbol index (integer) referencing the
+/// symbols.pack_ids array in the manifest.
+fn resolve_symbol_pack_id(manifest: &JsonValue) -> Option<String> {
+    let idx = manifest
+        .get("meta")
+        .and_then(|m| m.get("pack_id"))
+        .or_else(|| manifest.get("pack_id"))
+        .and_then(JsonValue::as_u64)? as usize;
+    manifest
+        .get("symbols")
+        .and_then(|s| s.get("pack_ids"))
+        .and_then(JsonValue::as_array)
+        .and_then(|arr| arr.get(idx))
+        .and_then(JsonValue::as_str)
+        .map(ToString::to_string)
 }
 
 #[cfg(test)]

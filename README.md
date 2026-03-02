@@ -166,6 +166,28 @@ appropriate equivalents on macOS/Windows). Use `greentic-operator dev status` to
 
 When the demo bundle exposes a gateway host/port (either via `greentic.demo.yaml` or `greentic.yaml`), an always-on HTTP ingress server listens on `http://<gateway-listen-addr>:<gateway-port>` and routes any POST/GET to `/{domain}/ingress/{provider}/{tenant}/{team?}` through the runner-host flows (`handle-webhook` ➜ `ingest`). Responses include the flow outcome (success, mode, outputs, errors) as structured JSON and are logged alongside the existing `demo receive` pipeline. `demo start` also logs `embedded runner mode; gateway/egress disabled` when it avoids launching the legacy GSM services, so the CLI stays on the embedded path unless `--nats=on` is explicitly requested.
 
+## Webhook tunneling
+
+`demo start` can automatically spawn a public tunnel so that external services (Telegram, Slack, Teams, etc.) can deliver webhooks to your local machine. Two tunnel backends are supported: **Cloudflare Tunnel** (default) and **ngrok**.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--cloudflared <on\|off>` | `on` | Start a Cloudflare quick tunnel (`*.trycloudflare.com`). |
+| `--cloudflared-binary <PATH>` | — | Explicit path to the `cloudflared` binary. |
+| `--ngrok <on\|off>` | `off` | Start an ngrok tunnel (`*.ngrok-free.app`). |
+| `--ngrok-binary <PATH>` | — | Explicit path to the `ngrok` binary. |
+
+Only one tunnel should be active at a time. To use ngrok instead of cloudflared:
+
+```bash
+greentic-operator demo start --bundle demo-bundle \
+  --cloudflared off --ngrok on
+```
+
+The discovered public URL is written to `state/runtime/<tenant>/<team>/public_base_url.txt` and injected into provider setup inputs automatically. Both backends can be restarted via `--restart ngrok` or `--restart cloudflared`.
+
+Binary resolution follows the standard order: explicit `--*-binary` flag, `GREENTIC_<NAME>` env var, `<bundle>/bin/`, `<bundle>/target/{debug,release}/`, then `$PATH`.
+
 ## Demo subscriptions mode
 
 `greentic-operator demo start` defaults to the embedded universal subscriptions scheduler. Use `services.subscriptions.mode` in `greentic.yaml` to switch between the legacy GSM binary and the provider-op driven implementation:

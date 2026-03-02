@@ -56,6 +56,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal", "net"]
 hyper = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 hyper-util = "0.1"
+ureq = { version = "3", features = ["json"] }
 greentic-types = { version="0.4", features = ["serde"] }
 rpassword = "7"
 greentic-secrets-lib = { version = "0.4", features = ["providers-dev"] }
@@ -71,11 +72,17 @@ include_dir = "0.7"
 once_cell = "1.21"
 sys-locale = "0.3"
 unic-langid = "0.9"
+qa-spec = "0.4"
 
 [dev-dependencies]
 tempfile = "3.10"
 indexmap = "2"
 semver = "1"
+
+[patch.crates-io]
+greentic-runner-host = { path = "../greentic-runner/crates/greentic-runner-host" }
+greentic-runner-desktop = { path = "../greentic-runner/crates/greentic-runner-desktop" }
+qa-spec = { path = "../greentic-qa/crates/qa-spec" }
 
 [workspace]
 members = [

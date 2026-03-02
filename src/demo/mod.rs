@@ -10,6 +10,7 @@ pub mod ingress_dispatch;
 pub mod ingress_types;
 pub mod input;
 pub mod pack_resolve;
+pub mod qa_bridge;
 pub mod repl;
 pub mod runner;
 pub mod runner_host;

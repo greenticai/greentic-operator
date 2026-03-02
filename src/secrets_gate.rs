@@ -73,7 +73,33 @@ impl SecretsManager for LoggingSecretsManager {
                 );
                 Ok(value)
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                // Fallback: if team-specific secret not found, try team="_" (wildcard).
+                // Secrets saved at tenant-level (no team) live under "_" but runtime
+                // may read with a specific team from the routing context.
+                if let Some(fallback_path) = team_wildcard_fallback(path) {
+                    operator_log::info(
+                        module_path!(),
+                        format!(
+                            "WASM secrets read fallback: team-specific not found, trying uri={fallback_path}",
+                        ),
+                    );
+                    match self.inner.read(&fallback_path).await {
+                        Ok(value) => {
+                            operator_log::debug(
+                                module_path!(),
+                                format!(
+                                    "WASM secrets read fallback resolved uri={fallback_path}; value={}",
+                                    SecretValue::new(value.as_slice()),
+                                ),
+                            );
+                            return Ok(value);
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Err(err)
+            }
         }
     }
 
@@ -84,6 +110,24 @@ impl SecretsManager for LoggingSecretsManager {
     async fn delete(&self, path: &str) -> SecretResult<()> {
         self.inner.delete(path).await
     }
+}
+
+/// If `path` is `secrets://env/tenant/TEAM/provider/key` and TEAM != "_",
+/// return the same URI with TEAM replaced by "_".
+fn team_wildcard_fallback(path: &str) -> Option<String> {
+    let trimmed = path.strip_prefix("secrets://")?;
+    let segments: Vec<&str> = trimmed.split('/').collect();
+    if segments.len() != 5 {
+        return None;
+    }
+    let team = segments[2];
+    if team == "_" || team.is_empty() {
+        return None; // Already wildcard, no fallback needed
+    }
+    Some(format!(
+        "secrets://{}/{}/{}/{}/{}",
+        segments[0], segments[1], "_", segments[3], segments[4]
+    ))
 }
 const ENV_ALLOW_ENV_SECRETS: &str = "GREENTIC_ALLOW_ENV_SECRETS";
 

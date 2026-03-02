@@ -43,6 +43,7 @@ use crate::operator_i18n;
 use crate::operator_log;
 use crate::project;
 use crate::provider_registry;
+use crate::qa_setup_wizard;
 use crate::runner_exec;
 use crate::runner_integration;
 use crate::runtime_state::RuntimePaths;
@@ -131,6 +132,8 @@ enum DemoSubcommand {
         about = "Alias of wizard. Plan or create a demo bundle from pack refs and allow rules"
     )]
     Wizard(DemoWizardArgs),
+    #[command(about = "Run interactive card-based setup wizard for a provider pack")]
+    SetupWizard(DemoSetupWizardArgs),
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -154,9 +157,16 @@ enum CloudflaredModeArg {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+enum NgrokModeArg {
+    On,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum RestartTarget {
     All,
     Cloudflared,
+    Ngrok,
     Nats,
     Gateway,
     Egress,
@@ -277,6 +287,14 @@ struct DemoUpArgs {
         help = "Explicit path to the cloudflared binary used when cloudflared mode is on."
     )]
     cloudflared_binary: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = NgrokModeArg::Off, help_heading = "Optional options", help = "Whether to start ngrok for webhook tunneling (alternative to cloudflared).")]
+    ngrok: NgrokModeArg,
+    #[arg(
+        long,
+        help_heading = "Optional options",
+        help = "Explicit path to the ngrok binary used when ngrok mode is on."
+    )]
+    ngrok_binary: Option<PathBuf>,
     #[arg(
         long,
         value_enum,
@@ -538,6 +556,23 @@ struct DemoWizardArgs {
     run_setup: bool,
     #[arg(long, help = "Optional JSON/YAML setup-input passed to setup runner.")]
     setup_input: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+#[command(about = "Run interactive card-based setup wizard for a provider pack.")]
+struct DemoSetupWizardArgs {
+    #[arg(long, help = "Path to the .gtpack file.")]
+    pack: PathBuf,
+    #[arg(long, help = "Provider ID (default: derived from pack manifest).")]
+    provider: Option<String>,
+    #[arg(long, default_value = "demo", help = "Tenant ID.")]
+    tenant: String,
+    #[arg(long, help = "Team ID.")]
+    team: Option<String>,
+    #[arg(long, help = "Setup flow to run (default: setup_default).")]
+    flow: Option<String>,
+    #[arg(long, help = "Path to demo bundle (for secrets resolution).")]
+    bundle: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1762,6 +1797,7 @@ impl DemoCommand {
             DemoSubcommand::Capability(args) => args.run(),
             DemoSubcommand::Run(args) => args.run(ctx),
             DemoSubcommand::Wizard(args) => args.run(),
+            DemoSubcommand::SetupWizard(args) => args.run(),
         }
     }
 }
@@ -1925,12 +1961,32 @@ impl DemoUpArgs {
                 }
             };
 
+            let mut ngrok_config = match self.ngrok {
+                NgrokModeArg::Off => None,
+                NgrokModeArg::On => {
+                    let explicit = self.ngrok_binary.clone();
+                    let binary = bin_resolver::resolve_binary(
+                        "ngrok",
+                        &ResolveCtx {
+                            config_dir: bundle.clone(),
+                            explicit_path: explicit,
+                        },
+                    )?;
+                    Some(crate::ngrok::NgrokConfig {
+                        binary,
+                        local_port: 8080,
+                        extra_args: Vec::new(),
+                        restart: restart.contains("ngrok"),
+                    })
+                }
+            };
+
             let mut public_base_url = self.public_base_url.clone();
             let team_id = self
                 .team
                 .clone()
                 .unwrap_or_else(|| DEMO_DEFAULT_TEAM.to_string());
-            let mut started_cloudflared_early = false;
+            let mut started_tunnel_early = false;
             if public_base_url.is_none()
                 && self.setup_input.is_some()
                 && let Some(cfg) = cloudflared_config.as_mut()
@@ -1968,10 +2024,50 @@ impl DemoUpArgs {
                     )
                 );
                 public_base_url = Some(handle.url.clone());
-                started_cloudflared_early = true;
+                started_tunnel_early = true;
             }
 
-            if started_cloudflared_early && let Some(cfg) = cloudflared_config.as_mut() {
+            if public_base_url.is_none()
+                && self.setup_input.is_some()
+                && let Some(cfg) = ngrok_config.as_mut()
+            {
+                let paths = RuntimePaths::new(&state_dir, &tenant, &team_id);
+                let setup_log = operator_log::reserve_service_log(&log_dir, "ngrok")
+                    .with_context(|| "unable to open ngrok.log")?;
+                operator_log::info(
+                    module_path!(),
+                    format!("starting setup-mode ngrok log={}", setup_log.display()),
+                );
+                let handle = crate::ngrok::start_tunnel(&paths, cfg, &setup_log)?;
+                operator_log::info(
+                    module_path!(),
+                    format!(
+                        "ngrok setup mode ready url={} log={}",
+                        handle.url,
+                        setup_log.display()
+                    ),
+                );
+                let domain_labels = domains_to_setup
+                    .iter()
+                    .map(|domain| domains::domain_name(*domain))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                println!(
+                    "{}",
+                    operator_i18n::trf(
+                        "cli.start.public_url_setup_domains",
+                        "Public URL (ngrok setup domains={}): {}",
+                        &[&domain_labels, &handle.url]
+                    )
+                );
+                public_base_url = Some(handle.url.clone());
+                started_tunnel_early = true;
+            }
+
+            if started_tunnel_early && let Some(cfg) = cloudflared_config.as_mut() {
+                cfg.restart = false;
+            }
+            if started_tunnel_early && let Some(cfg) = ngrok_config.as_mut() {
                 cfg.restart = false;
             }
 
@@ -2007,6 +2103,7 @@ impl DemoUpArgs {
                             nats_mode,
                             messaging_enabled,
                             cloudflared_config.clone(),
+                            ngrok_config.clone(),
                             &log_dir,
                             debug_enabled,
                         )
@@ -2197,6 +2294,25 @@ impl DemoUpArgs {
                 })
             }
         };
+        let ngrok = match self.ngrok {
+            NgrokModeArg::Off => None,
+            NgrokModeArg::On => {
+                let explicit = self.ngrok_binary.clone();
+                let binary = bin_resolver::resolve_binary(
+                    "ngrok",
+                    &ResolveCtx {
+                        config_dir: config_dir.clone(),
+                        explicit_path: explicit,
+                    },
+                )?;
+                Some(crate::ngrok::NgrokConfig {
+                    binary,
+                    local_port: demo_config.services.gateway.port,
+                    extra_args: Vec::new(),
+                    restart: restart.contains("ngrok"),
+                })
+            }
+        };
 
         let provider_setup_input = self.setup_input.clone();
         let timer_runner_binary = self.runner_binary.clone();
@@ -2221,6 +2337,7 @@ impl DemoUpArgs {
             &config_path,
             &demo_config,
             cloudflared,
+            ngrok,
             &restart,
             provider_options,
             &log_dir,
@@ -2477,6 +2594,82 @@ impl DemoPolicyArgs {
         gmap::upsert_policy(&gmap_path, &self.path, policy)?;
         project::sync_project(&self.bundle)?;
         copy_resolved_manifest(&self.bundle, &self.tenant, effective_team.as_deref())?;
+        Ok(())
+    }
+}
+
+impl DemoSetupWizardArgs {
+    fn run(self) -> anyhow::Result<()> {
+        let meta = domains::read_pack_meta(&self.pack)
+            .with_context(|| format!("failed to read pack {}", self.pack.display()))?;
+        let provider_id = self.provider.unwrap_or(meta.pack_id);
+        let setup_flow = self.flow.unwrap_or_else(|| "setup_default".to_string());
+
+        // 1. Collect answers via card wizard
+        let answers = qa_setup_wizard::run_interactive_card_wizard(&self.pack, &provider_id)?;
+
+        // 2. Build input payload with collected answers
+        let input = json!({
+            "tenant": &self.tenant,
+            "team": self.team.as_deref().unwrap_or("default"),
+            "id": &provider_id,
+            "setup_answers": &answers,
+            "config": { "id": &provider_id },
+            "msg": {
+                "id": format!("{provider_id}.setup"),
+                "tenant": { "env": "dev", "tenant": &self.tenant },
+                "channel": "setup",
+                "session_id": "setup",
+            },
+            "payload": {},
+        });
+
+        println!("\nRunning flow '{setup_flow}' with collected answers...");
+
+        // 3. Resolve secrets manager
+        let secrets_manager = if let Some(bundle) = &self.bundle {
+            secrets_gate::resolve_secrets_manager(bundle, &self.tenant, self.team.as_deref())?
+                .runtime_manager(Some(&provider_id))
+        } else {
+            default_manager()?
+        };
+
+        // 4. Run the setup flow via DemoRunner
+        let mut runner = DemoRunner::with_entry_flow(
+            self.pack.clone(),
+            &self.tenant,
+            self.team.clone(),
+            setup_flow.clone(),
+            provider_id.clone(),
+            input,
+            secrets_manager,
+        )?;
+
+        match runner.run_until_blocked() {
+            demo::DemoBlockedOn::Finished(output) => {
+                println!("\nFlow '{setup_flow}' completed:");
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&output)
+                        .unwrap_or_else(|_| "<invalid>".into())
+                );
+            }
+            demo::DemoBlockedOn::Waiting { reason, output, .. } => {
+                println!(
+                    "\nFlow '{setup_flow}' is waiting for input: {}",
+                    reason.as_deref().unwrap_or("unknown")
+                );
+                println!(
+                    "Output so far: {}",
+                    serde_json::to_string_pretty(&output)
+                        .unwrap_or_else(|_| "<invalid>".into())
+                );
+            }
+            demo::DemoBlockedOn::Error(err) => {
+                return Err(err.context(format!("flow '{setup_flow}' failed")));
+            }
+        }
+
         Ok(())
     }
 }
@@ -4263,16 +4456,11 @@ impl DemoSendArgs {
             .ok_or_else(|| anyhow::anyhow!("encode output missing payload"))?;
         let send_input = egress::build_send_payload(
             payload,
+            provider_type.clone(),
             self.tenant.clone(),
             team.map(|value| value.to_string()),
         );
-        let mut send_value = serde_json::to_value(&send_input)?;
-        if let Some(map) = send_value.as_object_mut() {
-            map.insert(
-                "provider_type".to_string(),
-                JsonValue::String(provider_type.clone()),
-            );
-        }
+        let send_value = serde_json::to_value(&send_input)?;
         let send_outcome = run_provider_component_op(
             &runner_host,
             &pack,
@@ -5152,6 +5340,7 @@ fn restart_name(target: &RestartTarget) -> String {
     match target {
         RestartTarget::All => "all",
         RestartTarget::Cloudflared => "cloudflared",
+        RestartTarget::Ngrok => "ngrok",
         RestartTarget::Nats => "nats",
         RestartTarget::Gateway => "gateway",
         RestartTarget::Egress => "egress",
@@ -6066,15 +6255,17 @@ fn run_plan_item(
         }
     }
 
-    let setup_values = if action == DomainAction::Setup {
-        Some(collect_setup_answers(
+    let (setup_values, qa_form_spec) = if action == DomainAction::Setup {
+        let (answers, form_spec) = qa_setup_wizard::run_qa_setup(
             &item.pack.path,
             &item.pack.pack_id,
             setup_answers,
             interactive,
-        )?)
+            None, // no pre-built FormSpec; will try setup.yaml fallback
+        )?;
+        (Some(answers), form_spec)
     } else {
-        None
+        (None, None)
     };
     let providers_root = state_root
         .join("state")
@@ -6152,6 +6343,28 @@ fn run_plan_item(
     } else {
         None
     };
+
+    // Persist secrets and config from QA results when FormSpec is available
+    if let Some(ref config) = qa_config_override
+        && let Some(ref form_spec) = qa_form_spec
+        && action == DomainAction::Setup
+        && let Err(err) = crate::qa_persist::persist_qa_config(
+            &providers_root,
+            &provider_id,
+            config,
+            &item.pack.path,
+            form_spec,
+            backup,
+        )
+    {
+        operator_log::warn(
+            module_path!(),
+            format!(
+                "failed to persist qa config provider={}: {err}",
+                provider_id
+            ),
+        );
+    }
 
     let public_base_url_ref = public_base_url.as_deref().map(|value| value.as_str());
     let mut input = build_input_payload(
@@ -6556,6 +6769,7 @@ fn read_public_base_url(root: &Path, tenant: &str, team: Option<&str>) -> Option
     let path = crate::cloudflared::public_url_path(&paths);
     let contents = std::fs::read_to_string(path).ok()?;
     crate::cloudflared::parse_public_url(&contents)
+        .or_else(|| crate::ngrok::parse_public_url(&contents))
 }
 
 fn parse_kv(input: &str) -> anyhow::Result<(String, JsonValue)> {

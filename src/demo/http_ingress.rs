@@ -1,6 +1,8 @@
-use std::{convert::Infallible, net::SocketAddr, sync::Arc, thread};
+use std::{convert::Infallible, net::SocketAddr, path::Path, sync::Arc, thread};
 
 use anyhow::{Context, Result};
+use base64::Engine as _;
+use greentic_types::ChannelMessageEnvelope;
 use http_body_util::{BodyExt, Full};
 use hyper::{
     Method, Request, Response, StatusCode,
@@ -18,6 +20,7 @@ use crate::demo::ingress_dispatch::dispatch_http_ingress;
 use crate::demo::ingress_types::{IngressHttpResponse, IngressRequestV1};
 use crate::demo::runner_host::{DemoRunnerHost, OperatorContext};
 use crate::domains::{self, Domain};
+use crate::messaging_universal::{app, dto::ProviderPayloadV1, egress};
 use crate::operator_log;
 
 #[derive(Clone)]
@@ -139,8 +142,8 @@ async fn handle_request(
     state: Arc<HttpIngressState>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let response = match handle_request_inner(req, state).await {
-        Ok(response) => response,
-        Err(response) => response,
+        Ok(response) => with_cors(response),
+        Err(response) => with_cors(response),
     };
     Ok(response)
 }
@@ -149,14 +152,30 @@ async fn handle_request_inner(
     req: Request<Incoming>,
     state: Arc<HttpIngressState>,
 ) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+    // CORS preflight
+    if req.method() == Method::OPTIONS {
+        return Ok(cors_preflight_response());
+    }
     if req.method() != Method::POST && req.method() != Method::GET {
         return Err(error_response(
             StatusCode::METHOD_NOT_ALLOWED,
-            "only GET/POST allowed",
+            "only GET/POST/OPTIONS allowed",
         ));
     }
-    let method = req.method().clone();
+
     let path = req.uri().path().to_string();
+
+    // Onboard API routes: /api/onboard/*
+    if path.starts_with("/api/onboard") {
+        return crate::onboard::api::handle_onboard_request(req, &path, &state.runner_host).await;
+    }
+
+    // Direct Line routes: /token, /v3/directline/*, /directline/*
+    if path == "/token" || path.starts_with("/v3/directline") || path.starts_with("/directline") {
+        return handle_directline_request(req, &path, state).await;
+    }
+
+    let method = req.method().clone();
     let parsed = match parse_route_segments(req.uri().path()) {
         Some(value) => value,
         None => {
@@ -256,6 +275,55 @@ async fn handle_request_inner(
         route_events_to_default_flow(state.runner_host.bundle_root(), &context, &result.events)
             .map_err(|err| error_response(StatusCode::BAD_GATEWAY, err.to_string()))?;
     }
+    if domain == Domain::Messaging && !result.messaging_envelopes.is_empty() {
+        // Filter out bot self-messages to prevent echo loops (e.g. Webex bots see
+        // their own replies as new webhook events).
+        let envelopes: Vec<_> = result
+            .messaging_envelopes
+            .iter()
+            .filter(|env| {
+                let dominated_by_bot = env
+                    .from
+                    .as_ref()
+                    .map(|f| f.id.ends_with(".bot") || f.id.ends_with("@webex.bot"))
+                    .unwrap_or(false);
+                if dominated_by_bot {
+                    operator_log::debug(
+                        module_path!(),
+                        format!(
+                            "[demo ingress] skipping bot self-message from={:?} id={}",
+                            env.from, env.id
+                        ),
+                    );
+                }
+                !dominated_by_bot
+            })
+            .cloned()
+            .collect();
+        if envelopes.is_empty() {
+            // All envelopes were bot self-messages — skip pipeline.
+            return build_http_response(&result.response)
+                .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err));
+        }
+        let provider = parsed.provider.clone();
+        let bundle = state.runner_host.bundle_root().to_path_buf();
+        let ctx = context.clone();
+        let runner_host = state.runner_host.clone();
+        // Run messaging pipeline in a background thread to avoid blocking the HTTP response.
+        std::thread::spawn(move || {
+            if let Err(err) =
+                route_messaging_envelopes(&bundle, &runner_host, &provider, &ctx, envelopes)
+            {
+                operator_log::error(
+                    module_path!(),
+                    format!(
+                        "[demo ingress] messaging pipeline failed provider={} err={err}",
+                        provider
+                    ),
+                );
+            }
+        });
+    }
 
     if debug_enabled {
         operator_log::debug(
@@ -274,6 +342,321 @@ async fn handle_request_inner(
 
     build_http_response(&result.response)
         .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err))
+}
+
+/// Run the messaging pipeline for ingress envelopes: app flow → render_plan → encode → send_payload.
+fn route_messaging_envelopes(
+    bundle: &Path,
+    runner_host: &DemoRunnerHost,
+    provider: &str,
+    ctx: &OperatorContext,
+    envelopes: Vec<ChannelMessageEnvelope>,
+) -> anyhow::Result<()> {
+    let team = ctx.team.as_deref();
+    let app_pack_path = app::resolve_app_pack_path(bundle, &ctx.tenant, team, None)
+        .context("resolve app pack for messaging pipeline")?;
+    let pack_info = app::load_app_pack_info(&app_pack_path).context("load app pack manifest")?;
+    let flow = app::select_app_flow(&pack_info).context("select app default flow")?;
+
+    operator_log::info(
+        module_path!(),
+        format!(
+            "[demo messaging] routing {} envelope(s) through app flow={} pack={}",
+            envelopes.len(),
+            flow.id,
+            pack_info.pack_id
+        ),
+    );
+
+    for envelope in &envelopes {
+        // Card routing: if the envelope has routeToCardId, look up the card from
+        // the app pack assets and send it directly (skip app flow).
+        let outputs = if let Some(route_to_card) = envelope.metadata.get("routeToCardId") {
+            match read_card_from_pack(&app_pack_path, route_to_card) {
+                Some(card_json) => {
+                    operator_log::info(
+                        module_path!(),
+                        format!(
+                            "[demo messaging] card routing: {} -> card asset found",
+                            route_to_card
+                        ),
+                    );
+                    let mut reply = envelope.clone();
+                    reply.metadata.insert(
+                        "adaptive_card".to_string(),
+                        serde_json::to_string(&card_json).unwrap_or_default(),
+                    );
+                    // Use card summary as fallback text.
+                    let summary = card_json
+                        .get("body")
+                        .and_then(|b| b.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|item| item.get("text"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or(route_to_card)
+                        .to_string();
+                    reply.text = Some(summary);
+                    vec![reply]
+                }
+                None => {
+                    operator_log::warn(
+                        module_path!(),
+                        format!(
+                            "[demo messaging] card routing: {} -> card asset NOT found, using app flow",
+                            route_to_card
+                        ),
+                    );
+                    run_app_flow_safe(bundle, ctx, &app_pack_path, &pack_info, &flow, envelope)
+                }
+            }
+        } else {
+            run_app_flow_safe(bundle, ctx, &app_pack_path, &pack_info, &flow, envelope)
+        };
+
+        for out_envelope in outputs {
+            let message_value = serde_json::to_value(&out_envelope)?;
+
+            let plan = match egress::render_plan(runner_host, ctx, provider, message_value.clone())
+            {
+                Ok(plan) => plan,
+                Err(err) => {
+                    operator_log::warn(
+                        module_path!(),
+                        format!("[demo messaging] render_plan failed: {err}; using empty plan"),
+                    );
+                    json!({})
+                }
+            };
+
+            let payload = match egress::encode_payload(
+                runner_host,
+                ctx,
+                provider,
+                message_value.clone(),
+                plan,
+            ) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    operator_log::warn(
+                        module_path!(),
+                        format!("[demo messaging] encode failed: {err}; using fallback payload"),
+                    );
+                    // Build a minimal payload from the envelope (same approach as run_end_to_end)
+                    let body_bytes = serde_json::to_vec(&message_value)?;
+                    ProviderPayloadV1 {
+                        content_type: "application/json".to_string(),
+                        body_b64: base64::engine::general_purpose::STANDARD.encode(&body_bytes),
+                        metadata_json: Some(serde_json::to_string(&message_value)?),
+                        metadata: None,
+                    }
+                }
+            };
+
+            let provider_type =
+                runner_host.canonical_provider_type(Domain::Messaging, provider);
+            let send_input =
+                egress::build_send_payload(payload, &provider_type, &ctx.tenant, ctx.team.clone());
+            let send_bytes = serde_json::to_vec(&send_input)?;
+            let outcome = runner_host.invoke_provider_op(
+                Domain::Messaging,
+                provider,
+                "send_payload",
+                &send_bytes,
+                ctx,
+            )?;
+
+            // Check the actual provider response (ok field), not just WASM success.
+            let provider_ok = outcome
+                .output
+                .as_ref()
+                .and_then(|v| v.get("ok"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if outcome.success && provider_ok {
+                operator_log::info(
+                    module_path!(),
+                    format!(
+                        "[demo messaging] send succeeded provider={} envelope_id={}",
+                        provider, out_envelope.id
+                    ),
+                );
+            } else {
+                let provider_msg = outcome
+                    .output
+                    .as_ref()
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let err_msg = outcome
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| provider_msg.to_string());
+                operator_log::error(
+                    module_path!(),
+                    format!(
+                        "[demo messaging] send failed provider={} provider_ok={} err={}",
+                        provider, provider_ok, err_msg
+                    ),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read a card JSON from the app pack's assets directory.
+fn read_card_from_pack(
+    pack_path: &std::path::Path,
+    card_key: &str,
+) -> Option<serde_json::Value> {
+    let file = std::fs::File::open(pack_path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let asset_path = format!("assets/cards/{card_key}.json");
+    let mut entry = archive.by_name(&asset_path).ok()?;
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(&mut entry, &mut buf).ok()?;
+    serde_json::from_slice(&buf).ok()
+}
+
+/// Run the app flow, returning outputs or a fallback clone of the input envelope.
+fn run_app_flow_safe(
+    bundle: &std::path::Path,
+    ctx: &crate::demo::runner_host::OperatorContext,
+    app_pack_path: &std::path::Path,
+    pack_info: &crate::messaging_universal::app::AppPackInfo,
+    flow: &crate::messaging_universal::app::AppFlowInfo,
+    envelope: &greentic_types::ChannelMessageEnvelope,
+) -> Vec<greentic_types::ChannelMessageEnvelope> {
+    match app::run_app_flow(bundle, ctx, app_pack_path, &pack_info.pack_id, &flow.id, envelope) {
+        Ok(outputs) => outputs,
+        Err(err) => {
+            operator_log::error(
+                module_path!(),
+                format!("[demo messaging] app flow failed: {err}"),
+            );
+            vec![envelope.clone()]
+        }
+    }
+}
+
+/// Handle Direct Line API requests: /token, /v3/directline/*, /directline/*
+async fn handle_directline_request(
+    req: Request<Incoming>,
+    path: &str,
+    state: Arc<HttpIngressState>,
+) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+    let method = req.method().clone();
+    let queries = collect_queries(req.uri().query());
+
+    // Extract tenant from query param or default
+    let tenant = queries
+        .iter()
+        .find(|(k, _)| k == "tenant")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "default".to_string());
+
+    let provider = "messaging-webchat".to_string();
+    if !state.domains.contains(&Domain::Messaging) {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "messaging domain disabled",
+        ));
+    }
+
+    // Map /token to the Direct Line tokens/generate path
+    let dl_path = if path == "/token" {
+        "/v3/directline/tokens/generate".to_string()
+    } else {
+        path.to_string()
+    };
+
+    let headers = collect_headers(req.headers());
+    let payload_bytes = req
+        .into_body()
+        .collect()
+        .await
+        .map(|collected| collected.to_bytes())
+        .unwrap_or_default();
+
+    let context = OperatorContext {
+        tenant: tenant.clone(),
+        team: Some("default".to_string()),
+        correlation_id: None,
+    };
+
+    let ingress_request = IngressRequestV1 {
+        v: 1,
+        domain: "messaging".to_string(),
+        provider: provider.clone(),
+        handler: None,
+        tenant: tenant.clone(),
+        team: Some("default".to_string()),
+        method: method.as_str().to_string(),
+        path: dl_path,
+        query: queries,
+        headers,
+        body: payload_bytes.to_vec(),
+        correlation_id: None,
+        remote_addr: None,
+    };
+
+    let result = dispatch_http_ingress(
+        state.runner_host.as_ref(),
+        Domain::Messaging,
+        &ingress_request,
+        &context,
+    )
+    .map_err(|err| error_response(StatusCode::BAD_GATEWAY, err.to_string()))?;
+
+    // Route messaging envelopes through the pipeline (app flow → encode → send)
+    if !result.messaging_envelopes.is_empty() {
+        let envelopes = result.messaging_envelopes.clone();
+        let bundle = state.runner_host.bundle_root().to_path_buf();
+        let ctx = context.clone();
+        let runner_host = state.runner_host.clone();
+        std::thread::spawn(move || {
+            if let Err(err) =
+                route_messaging_envelopes(&bundle, &runner_host, &provider, &ctx, envelopes)
+            {
+                operator_log::error(
+                    module_path!(),
+                    format!("[demo ingress] webchat messaging pipeline failed err={err}",),
+                );
+            }
+        });
+    }
+
+    build_http_response(&result.response)
+        .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err))
+}
+
+fn cors_preflight_response() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        .header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-Requested-With, x-ms-bot-agent",
+        )
+        .header("Access-Control-Max-Age", "86400")
+        .body(Full::from(Bytes::new()))
+        .unwrap()
+}
+
+fn with_cors(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+    let headers = response.headers_mut();
+    headers.insert("Access-Control-Allow-Origin", HeaderValue::from_static("*"));
+    headers.insert(
+        "Access-Control-Allow-Methods",
+        HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    headers.insert(
+        "Access-Control-Allow-Headers",
+        HeaderValue::from_static("Content-Type, Authorization, X-Requested-With, x-ms-bot-agent"),
+    );
+    response
 }
 
 fn build_http_response(response: &IngressHttpResponse) -> Result<Response<Full<Bytes>>, String> {

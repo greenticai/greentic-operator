@@ -38,6 +38,7 @@ Once a flow blocks on an adaptive card, you interact through the REPL commands d
 - `@json`: dumps the raw JSON payload for the waiting card.
 - `@input <field>=<value>`: stores a value for the named input (available fields are listed when you mistype the id).
 - `@click <action_id>`: fires the named action (invalid ids also show the available actions).
+- `@setup [provider]`: runs the FormSpec-driven QA wizard for a provider pack. When called without an argument, uses the current pack. The wizard builds a FormSpec from the pack's `setup.yaml` (or WASM `qa-spec` op), interactively prompts for each field with type hints and validation, then persists secrets to the dev store and non-secret config to the provider config envelope.
 - `@back`: restores the previous blocked card and pending inputs.
 - `@help`: prints the quick command reference.
 - `@quit`: exits the REPL.

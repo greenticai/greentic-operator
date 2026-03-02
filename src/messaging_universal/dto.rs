@@ -74,13 +74,17 @@ pub struct EncodeOutV1 {
 pub struct ProviderPayloadV1 {
     pub content_type: String,
     pub body_b64: String,
+    /// Accepts both `metadata` (BTreeMap from greentic-types) and legacy `metadata_json` (String).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendPayloadInV1 {
     pub v: u32,
+    pub provider_type: String,
     pub payload: ProviderPayloadV1,
     pub tenant: TenantHint,
     #[serde(default, skip_serializing_if = "Option::is_none")]

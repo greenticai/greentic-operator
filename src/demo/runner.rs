@@ -92,6 +92,14 @@ impl DemoRunner {
         })
     }
 
+    pub fn pack_path(&self) -> &Path {
+        &self.pack_path
+    }
+
+    pub fn pack_id(&self) -> &str {
+        &self.pack_id
+    }
+
     pub fn submit_user_event(&mut self, event: UserEvent) {
         self.pending_input = Some(event.into_value());
     }

@@ -1,7 +1,7 @@
 use anyhow::Context;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use greentic_types::cbor::canonical;
+use greentic_types::ChannelMessageEnvelope;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
 use crate::demo::ingress_types::{
@@ -10,6 +10,7 @@ use crate::demo::ingress_types::{
 use crate::demo::runner_host::{DemoRunnerHost, OperatorContext};
 use crate::domains::Domain;
 use crate::hooks::runner::apply_post_ingress_hooks_dispatch;
+use crate::messaging_universal::ingress::build_ingress_request;
 use crate::operator_log;
 
 pub fn dispatch_http_ingress(
@@ -19,10 +20,22 @@ pub fn dispatch_http_ingress(
     ctx: &OperatorContext,
 ) -> anyhow::Result<IngressDispatchResult> {
     let op = "ingest_http";
-    let payload_cbor =
-        canonical::to_canonical_cbor(request).map_err(|err| anyhow::anyhow!("{err}"))?;
+    // Convert IngressRequestV1 to HttpInV1 (JSON) — the format providers expect.
+    let http_in = build_ingress_request(
+        &request.provider,
+        request.handler.clone(),
+        &request.method,
+        &request.path,
+        request.headers.clone(),
+        request.query.clone(),
+        &request.body,
+        None,
+        Some(request.tenant.clone()),
+        request.team.clone(),
+    );
+    let payload_json = serde_json::to_vec(&http_in)?;
     let outcome =
-        runner_host.invoke_provider_op(domain, &request.provider, op, &payload_cbor, ctx)?;
+        runner_host.invoke_provider_op(domain, &request.provider, op, &payload_json, ctx)?;
 
     if !outcome.success {
         let message = outcome
@@ -49,7 +62,12 @@ fn parse_dispatch_result(value: &JsonValue) -> anyhow::Result<IngressDispatchRes
     let http_value = value.get("http").unwrap_or(value);
     let response = parse_http_response(http_value)?;
     let events = parse_events(value.get("events"))?;
-    Ok(IngressDispatchResult { response, events })
+    let messaging_envelopes = parse_messaging_envelopes(value.get("events"));
+    Ok(IngressDispatchResult {
+        response,
+        events,
+        messaging_envelopes,
+    })
 }
 
 fn parse_http_response(value: &JsonValue) -> anyhow::Result<IngressHttpResponse> {
@@ -134,26 +152,30 @@ fn parse_events(value: Option<&JsonValue>) -> anyhow::Result<Vec<EventEnvelopeV1
 
     let mut events = Vec::new();
     for entry in array {
-        let event: EventEnvelopeV1 = serde_json::from_value(entry.clone()).with_context(|| {
-            format!(
-                "invalid EventEnvelopeV1 emitted by provider: {}",
-                compact_preview(entry)
-            )
-        })?;
-        events.push(event);
+        // Messaging providers emit ChannelMessageEnvelope (not EventEnvelopeV1)
+        // in their events array — skip entries that don't match.
+        match serde_json::from_value::<EventEnvelopeV1>(entry.clone()) {
+            Ok(event) => events.push(event),
+            Err(_) => continue,
+        }
     }
     Ok(events)
 }
 
-fn compact_preview(value: &JsonValue) -> String {
-    match value {
-        JsonValue::Object(map) => {
-            let mut keys = map.keys().take(8).cloned().collect::<Vec<_>>();
-            keys.sort();
-            format!("keys={}", keys.join(","))
+fn parse_messaging_envelopes(value: Option<&JsonValue>) -> Vec<ChannelMessageEnvelope> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let Some(array) = value.as_array() else {
+        return Vec::new();
+    };
+    let mut envelopes = Vec::new();
+    for entry in array {
+        if let Ok(envelope) = serde_json::from_value::<ChannelMessageEnvelope>(entry.clone()) {
+            envelopes.push(envelope);
         }
-        _ => value.to_string(),
     }
+    envelopes
 }
 
 pub fn events_debug_json(events: &[EventEnvelopeV1]) -> JsonValue {

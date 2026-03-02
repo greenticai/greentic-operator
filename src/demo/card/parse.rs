@@ -79,7 +79,7 @@ pub fn detect_adaptive_card_view(value: &JsonValue) -> Option<CardView> {
     let inputs = card
         .get("body")
         .and_then(JsonValue::as_array)
-        .map(|items| items.iter().filter_map(parse_input).collect())
+        .map(|items| collect_inputs(items))
         .unwrap_or_default();
 
     let actions = card
@@ -126,6 +126,30 @@ fn extract_card_object(value: &JsonValue) -> Option<&JsonValue> {
         return Some(value);
     }
     None
+}
+
+/// Recursively collect Input.* elements from body items, including those
+/// nested inside Container, ColumnSet, and Column elements.
+fn collect_inputs(items: &[JsonValue]) -> Vec<CardInput> {
+    let mut inputs = Vec::new();
+    for item in items {
+        if let Some(input) = parse_input(item) {
+            inputs.push(input);
+        }
+        // Recurse into Container.items
+        if let Some(children) = item.get("items").and_then(JsonValue::as_array) {
+            inputs.extend(collect_inputs(children));
+        }
+        // Recurse into ColumnSet.columns[].items
+        if let Some(columns) = item.get("columns").and_then(JsonValue::as_array) {
+            for col in columns {
+                if let Some(col_items) = col.get("items").and_then(JsonValue::as_array) {
+                    inputs.extend(collect_inputs(col_items));
+                }
+            }
+        }
+    }
+    inputs
 }
 
 fn parse_input(value: &JsonValue) -> Option<CardInput> {

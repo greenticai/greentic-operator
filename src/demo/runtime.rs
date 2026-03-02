@@ -16,6 +16,7 @@ use crate::supervisor;
 
 use crate::cloudflared::{self, CloudflaredConfig};
 use crate::config::{DemoConfig, DemoSubscriptionsMode};
+use crate::ngrok::{self, NgrokConfig};
 
 use crate::subscriptions_universal::{
     build_runner, ensure_desired_subscriptions, scheduler::Scheduler, service::SubscriptionService,
@@ -406,6 +407,7 @@ pub fn demo_up(
     nats_mode: NatsMode,
     messaging_enabled: bool,
     cloudflared: Option<CloudflaredConfig>,
+    ngrok: Option<NgrokConfig>,
     log_dir: &Path,
     debug_enabled: bool,
 ) -> anyhow::Result<()> {
@@ -476,6 +478,59 @@ pub fn demo_up(
             crate::operator_i18n::trf(
                 "demo.runtime.public_url_cloudflared",
                 "Public URL (service=cloudflared): {}",
+                &[&url]
+            )
+        );
+    } else if let Some(config) = ngrok {
+        let ngrok_log = operator_log::reserve_service_log(log_dir, "ngrok")
+            .with_context(|| "unable to open ngrok.log")?;
+        operator_log::info(
+            module_path!(),
+            format!(
+                "starting ngrok log={} bundle={}",
+                ngrok_log.display(),
+                bundle_root.display()
+            ),
+        );
+        let handle = ngrok::start_tunnel(&paths, &config, &ngrok_log)?;
+        operator_log::info(
+            module_path!(),
+            format!(
+                "ngrok ready url={} log={}",
+                handle.url,
+                handle.log_path.display()
+            ),
+        );
+        if debug_enabled {
+            operator_log::debug(
+                module_path!(),
+                format!(
+                    "[demo dev] tenant={} team={} ngrok url={} log={}",
+                    tenant,
+                    team_id,
+                    handle.url,
+                    handle.log_path.display()
+                ),
+            );
+        }
+        let url = handle.url.clone();
+        let log_path = handle.log_path.clone();
+        service_tracker.record_with_log("ngrok", "ngrok", Some(&log_path))?;
+        let summary = ServiceSummary::with_details(
+            "ngrok",
+            Some(handle.pid),
+            vec![
+                format!("url={}", url),
+                format!("log={}", log_path.display()),
+            ],
+        );
+        service_summaries.push(summary);
+        public_base_url = Some(url.clone());
+        println!(
+            "{}",
+            crate::operator_i18n::trf(
+                "demo.runtime.public_url_ngrok",
+                "Public URL (service=ngrok): {}",
                 &[&url]
             )
         );
@@ -621,6 +676,7 @@ pub fn demo_up_services(
     config_path: &Path,
     config: &DemoConfig,
     cloudflared: Option<CloudflaredConfig>,
+    ngrok: Option<NgrokConfig>,
     restart: &BTreeSet<String>,
     provider_options: crate::providers::ProviderSetupOptions,
     log_dir: &Path,
@@ -660,6 +716,9 @@ pub fn demo_up_services(
 
     if should_restart(restart, "cloudflared") {
         let _ = supervisor::stop_pidfile(&paths.pid_path("cloudflared"), 2_000);
+    }
+    if should_restart(restart, "ngrok") {
+        let _ = supervisor::stop_pidfile(&paths.pid_path("ngrok"), 2_000);
     }
 
     let public_base_url = if let Some(cfg) = cloudflared {
@@ -713,6 +772,58 @@ pub fn demo_up_services(
             )
         );
         service_tracker.record_with_log("cloudflared", "cloudflared", Some(&handle.log_path))?;
+        Some(handle.url)
+    } else if let Some(cfg) = ngrok {
+        let ngrok_log = operator_log::reserve_service_log(log_dir, "ngrok")
+            .with_context(|| "unable to open ngrok.log")?;
+        operator_log::info(
+            module_path!(),
+            format!("starting ngrok log={}", ngrok_log.display()),
+        );
+        let handle = ngrok::start_tunnel(&paths, &cfg, &ngrok_log)?;
+        let mut domain_labels = Vec::new();
+        if discovery.domains.messaging {
+            domain_labels.push("messaging");
+        }
+        if discovery.domains.events {
+            domain_labels.push("events");
+        }
+        let domain_list = if domain_labels.is_empty() {
+            "none".to_string()
+        } else {
+            domain_labels.join(",")
+        };
+        operator_log::info(
+            module_path!(),
+            format!(
+                "ngrok ready domains={} url={} log={}",
+                domain_list,
+                handle.url,
+                handle.log_path.display()
+            ),
+        );
+        if debug_enabled {
+            operator_log::debug(
+                module_path!(),
+                format!(
+                    "[demo dev] tenant={} team={} ngrok domains={} url={} log={}",
+                    tenant,
+                    team,
+                    domain_list,
+                    handle.url,
+                    handle.log_path.display()
+                ),
+            );
+        }
+        println!(
+            "{}",
+            crate::operator_i18n::trf(
+                "demo.runtime.public_url_ngrok_domains",
+                "Public URL (service=ngrok domains={}): {}",
+                &[&domain_list, &handle.url]
+            )
+        );
+        service_tracker.record_with_log("ngrok", "ngrok", Some(&handle.log_path))?;
         Some(handle.url)
     } else {
         None
