@@ -27,8 +27,12 @@ struct RequestParams {
 }
 
 impl RequestParams {
-    fn tenant(&self) -> &str { &self.tenant }
-    fn team(&self) -> Option<&str> { self.team.as_deref() }
+    fn tenant(&self) -> &str {
+        &self.tenant
+    }
+    fn team(&self) -> Option<&str> {
+        self.team.as_deref()
+    }
 }
 
 #[allow(clippy::result_large_err)]
@@ -52,7 +56,15 @@ fn parse_request(body: &Value) -> Result<RequestParams, Response<Full<Bytes>>> {
     let locale = body["locale"].as_str().unwrap_or("en").to_string();
     let mode = parse_mode(body);
 
-    Ok(RequestParams { provider_id, domain, tenant, team, answers, locale, mode })
+    Ok(RequestParams {
+        provider_id,
+        domain,
+        tenant,
+        team,
+        answers,
+        locale,
+        mode,
+    })
 }
 
 // ── FormSpec loading with WASM → setup.yaml fallback ────────────────────────
@@ -64,23 +76,43 @@ fn load_form_spec_with_fallback(
     params: &RequestParams,
 ) -> Option<qa_spec::FormSpec> {
     match get_form_spec_from_pack(
-        bundle_root, domain, pack, &params.provider_id,
-        params.tenant(), params.team(), &params.locale, params.mode,
+        bundle_root,
+        domain,
+        pack,
+        &params.provider_id,
+        params.tenant(),
+        params.team(),
+        &params.locale,
+        params.mode,
     ) {
         Some(spec) => {
             operator_log::info(
                 module_path!(),
-                format!("[onboard] qa/spec path=wasm provider={} questions={}", params.provider_id, spec.questions.len()),
+                format!(
+                    "[onboard] qa/spec path=wasm provider={} questions={}",
+                    params.provider_id,
+                    spec.questions.len()
+                ),
             );
             Some(spec)
         }
         None => {
             operator_log::info(
                 module_path!(),
-                format!("[onboard] qa/spec path=fallback provider={} pack={}", params.provider_id, pack.path.display()),
+                format!(
+                    "[onboard] qa/spec path=fallback provider={} pack={}",
+                    params.provider_id,
+                    pack.path.display()
+                ),
             );
             let mut spec = setup_to_formspec::pack_to_form_spec(&pack.path, &params.provider_id)?;
-            apply_i18n_to_form_spec(&mut spec, bundle_root, &params.provider_id, &params.locale, params.mode.as_str());
+            apply_i18n_to_form_spec(
+                &mut spec,
+                bundle_root,
+                &params.provider_id,
+                &params.locale,
+                params.mode.as_str(),
+            );
             Some(spec)
         }
     }
@@ -95,18 +127,16 @@ fn load_form_spec_with_fallback(
 /// reads secrets via its own constant (e.g. `SLACK_BOT_TOKEN` → `slack_bot_token`).
 /// This table bridges that gap by copying the value to the runtime key name.
 const PROVIDER_SECRET_ALIASES: &[(&str, &[(&str, &str, bool)])] = &[
-    ("messaging-telegram", &[
-        ("bot_token", "telegram_bot_token", true),
-    ]),
-    ("messaging-slack", &[
-        ("bot_token", "slack_bot_token", true),
-    ]),
-    ("messaging-webex", &[
-        ("bot_token", "webex_bot_token", true),
-    ]),
-    ("messaging-whatsapp", &[
-        ("access_token", "whatsapp_token", true),
-    ]),
+    (
+        "messaging-telegram",
+        &[("bot_token", "telegram_bot_token", true)],
+    ),
+    ("messaging-slack", &[("bot_token", "slack_bot_token", true)]),
+    ("messaging-webex", &[("bot_token", "webex_bot_token", true)]),
+    (
+        "messaging-whatsapp",
+        &[("access_token", "whatsapp_token", true)],
+    ),
 ];
 
 fn inject_provider_aliases(
@@ -116,10 +146,15 @@ fn inject_provider_aliases(
     answers: &Value,
 ) {
     // Apply static alias table (setup.yaml field → WASM runtime key)
-    if let Some(&(_, aliases)) = PROVIDER_SECRET_ALIASES.iter().find(|&&(id, _)| id == provider_id)
+    if let Some(&(_, aliases)) = PROVIDER_SECRET_ALIASES
+        .iter()
+        .find(|&&(id, _)| id == provider_id)
     {
         for &(src_key, dst_key, is_secret) in aliases {
-            if let Some(val) = config.get(src_key).and_then(Value::as_str).map(String::from)
+            if let Some(val) = config
+                .get(src_key)
+                .and_then(Value::as_str)
+                .map(String::from)
                 && !val.is_empty()
             {
                 if let Some(map) = config.as_object_mut() {
@@ -186,7 +221,10 @@ fn run_provider_flow(
         format!("[onboard] running {} flow for {}", flow_name, provider_id),
     );
 
-    match state.runner_host.invoke_provider_op(domain, provider_id, flow_name, payload_bytes, ctx) {
+    match state
+        .runner_host
+        .invoke_provider_op(domain, provider_id, flow_name, payload_bytes, ctx)
+    {
         Ok(outcome) => {
             operator_log::info(
                 module_path!(),
@@ -205,7 +243,10 @@ fn run_provider_flow(
         Err(err) => {
             operator_log::error(
                 module_path!(),
-                format!("[onboard] {} flow failed for {}: {err}", flow_name, provider_id),
+                format!(
+                    "[onboard] {} flow failed for {}: {err}",
+                    flow_name, provider_id
+                ),
             );
             json!({
                 "flow": flow_name,
@@ -218,7 +259,12 @@ fn run_provider_flow(
 
 // ── Public URL meta injection ───────────────────────────────────────────────
 
-fn inject_public_url_meta(response: &mut Value, bundle_root: &std::path::Path, tenant: &str, team: Option<&str>) {
+fn inject_public_url_meta(
+    response: &mut Value,
+    bundle_root: &std::path::Path,
+    tenant: &str,
+    team: Option<&str>,
+) {
     if let Some(url) = read_runtime_public_url(bundle_root, tenant, team) {
         response["meta"] = json!({ "public_url": url });
     }
@@ -265,7 +311,11 @@ pub fn get_form_spec(
 
     operator_log::info(
         module_path!(),
-        format!("[onboard] qa/spec provider={} status={}", params.provider_id, payload.status.as_str()),
+        format!(
+            "[onboard] qa/spec provider={} status={}",
+            params.provider_id,
+            payload.status.as_str()
+        ),
     );
 
     let mut response = rendered;
@@ -326,7 +376,9 @@ pub fn submit_answers(
         module_path!(),
         format!(
             "[onboard] qa/submit provider={} tenant={} team={:?}",
-            params.provider_id, params.tenant(), params.team()
+            params.provider_id,
+            params.tenant(),
+            params.team()
         ),
     );
 
@@ -374,9 +426,15 @@ pub fn submit_answers(
         if let Some(label) = params.answers.get("instance_label").and_then(Value::as_str)
             && !label.is_empty()
         {
-            map.insert("instance_label".to_string(), Value::String(label.to_string()));
+            map.insert(
+                "instance_label".to_string(),
+                Value::String(label.to_string()),
+            );
         }
-        map.insert("_scope_tenant".to_string(), Value::String(params.tenant().to_string()));
+        map.insert(
+            "_scope_tenant".to_string(),
+            Value::String(params.tenant().to_string()),
+        );
         if let Some(t) = params.team() {
             map.insert("_scope_team".to_string(), Value::String(t.to_string()));
         }
@@ -384,8 +442,14 @@ pub fn submit_answers(
 
     // 2. Get FormSpec (for secret field identification — locale not needed here)
     let mut form_spec = match get_form_spec_from_pack(
-        bundle_root, params.domain, &pack, &params.provider_id,
-        params.tenant(), params.team(), "en", params.mode,
+        bundle_root,
+        params.domain,
+        &pack,
+        &params.provider_id,
+        params.tenant(),
+        params.team(),
+        "en",
+        params.mode,
     ) {
         Some(spec) => spec,
         None => setup_to_formspec::pack_to_form_spec(&pack.path, &params.provider_id)
@@ -393,7 +457,12 @@ pub fn submit_answers(
     };
 
     // 3. Inject secret aliases into config + FormSpec (single batch to avoid DEK cache bug)
-    inject_provider_aliases(&params.provider_id, &mut config, &mut form_spec, &params.answers);
+    inject_provider_aliases(
+        &params.provider_id,
+        &mut config,
+        &mut form_spec,
+        &params.answers,
+    );
 
     // Persist secrets + config (single DevStore instance writes all secrets in one batch)
     let providers_root = bundle_root.join(".providers");
@@ -411,15 +480,12 @@ pub fn submit_answers(
             true,
         ))
         .map_err(|err| {
-        operator_log::error(
-            module_path!(),
-            format!("[onboard] persist failed: {err}"),
-        );
-        error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("persist failed: {err}"),
-        )
-    })?;
+            operator_log::error(module_path!(), format!("[onboard] persist failed: {err}"));
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persist failed: {err}"),
+            )
+        })?;
     let (secrets_saved, config_written) = persist_result;
 
     // 4. Update gmap policy
@@ -468,7 +534,13 @@ pub fn submit_answers(
 
         if has_setup_flow {
             let public_base_url = config.get("public_base_url").and_then(Value::as_str);
-            let flow_input = build_setup_flow_input(&params.provider_id, params.tenant(), params.team(), public_base_url, &config);
+            let flow_input = build_setup_flow_input(
+                &params.provider_id,
+                params.tenant(),
+                params.team(),
+                public_base_url,
+                &config,
+            );
             let payload_bytes = serde_json::to_vec(&flow_input).unwrap_or_default();
 
             let ctx = crate::demo::runner_host::OperatorContext {
@@ -478,22 +550,44 @@ pub fn submit_answers(
             };
 
             setup_flow_result = Some(run_provider_flow(
-                state, params.domain, &params.provider_id, "setup_default", &payload_bytes, &ctx,
+                state,
+                params.domain,
+                &params.provider_id,
+                "setup_default",
+                &payload_bytes,
+                &ctx,
             ));
 
             // Run verify_webhooks if available
             if pack.entry_flows.iter().any(|f| f == "verify_webhooks") {
                 verify_flow_result = Some(run_provider_flow(
-                    state, params.domain, &params.provider_id, "verify_webhooks", &payload_bytes, &ctx,
+                    state,
+                    params.domain,
+                    &params.provider_id,
+                    "verify_webhooks",
+                    &payload_bytes,
+                    &ctx,
                 ));
             }
 
             webhook_result = webhook_setup::try_provider_setup_webhook(
-                bundle_root, params.domain, &pack, &params.provider_id, params.tenant(), params.team(), &config,
+                bundle_root,
+                params.domain,
+                &pack,
+                &params.provider_id,
+                params.tenant(),
+                params.team(),
+                &config,
             );
         } else {
             webhook_result = webhook_setup::try_provider_setup_webhook(
-                bundle_root, params.domain, &pack, &params.provider_id, params.tenant(), params.team(), &config,
+                bundle_root,
+                params.domain,
+                &pack,
+                &params.provider_id,
+                params.tenant(),
+                params.team(),
+                &config,
             );
         }
     } else {
@@ -503,7 +597,10 @@ pub fn submit_answers(
     if let Some(ref result) = webhook_result {
         operator_log::info(
             module_path!(),
-            format!("[onboard] setup_webhook provider={} result={}", params.provider_id, result),
+            format!(
+                "[onboard] setup_webhook provider={} result={}",
+                params.provider_id, result
+            ),
         );
     }
 
@@ -546,14 +643,15 @@ fn get_form_spec_from_pack(
     locale: &str,
     mode: QaMode,
 ) -> Option<qa_spec::FormSpec> {
+    use super::provider_i18n;
     use crate::demo::qa_bridge;
     use crate::demo::runner_host::{DemoRunnerHost, OperatorContext};
     use crate::discovery::{self, DiscoveryOptions};
     use crate::secrets_gate;
-    use super::provider_i18n;
 
     let cbor_only = bundle_root.join("greentic.demo.yaml").exists();
-    let discovery = discovery::discover_with_options(bundle_root, DiscoveryOptions { cbor_only }).ok()?;
+    let discovery =
+        discovery::discover_with_options(bundle_root, DiscoveryOptions { cbor_only }).ok()?;
     let secrets_handle = secrets_gate::resolve_secrets_manager(bundle_root, tenant, team).ok()?;
     let host = DemoRunnerHost::new(
         bundle_root.to_path_buf(),
@@ -571,14 +669,22 @@ fn get_form_spec_from_pack(
     };
 
     let qa_payload = serde_json::to_vec(&json!({"mode": mode.as_str()})).ok()?;
-    let qa_out = match host
-        .invoke_provider_component_op_direct(domain, pack, provider_id, "qa-spec", &qa_payload, &ctx)
-    {
+    let qa_out = match host.invoke_provider_component_op_direct(
+        domain,
+        pack,
+        provider_id,
+        "qa-spec",
+        &qa_payload,
+        &ctx,
+    ) {
         Ok(out) => out,
         Err(err) => {
             operator_log::info(
                 module_path!(),
-                format!("[onboard] qa-spec invoke failed for {}: {}", provider_id, err),
+                format!(
+                    "[onboard] qa-spec invoke failed for {}: {}",
+                    provider_id, err
+                ),
             );
             return None;
         }
@@ -587,7 +693,10 @@ fn get_form_spec_from_pack(
     if !qa_out.success {
         operator_log::info(
             module_path!(),
-            format!("[onboard] qa-spec not successful for {}: {:?}", provider_id, qa_out.error),
+            format!(
+                "[onboard] qa-spec not successful for {}: {:?}",
+                provider_id, qa_out.error
+            ),
         );
         return None;
     }
@@ -771,7 +880,9 @@ fn apply_i18n_to_form_spec(
         module_path!(),
         format!(
             "[onboard] i18n fallback: provider={} locale={} keys={}",
-            provider_id, locale, i18n.len()
+            provider_id,
+            locale,
+            i18n.len()
         ),
     );
 }
@@ -870,9 +981,13 @@ fn read_runtime_public_url(
 
     for entry in entries.flatten() {
         let url_path = entry.path().join("public_base_url.txt");
-        let Ok(meta) = std::fs::metadata(&url_path) else { continue };
+        let Ok(meta) = std::fs::metadata(&url_path) else {
+            continue;
+        };
         let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let Ok(contents) = std::fs::read_to_string(&url_path) else { continue };
+        let Ok(contents) = std::fs::read_to_string(&url_path) else {
+            continue;
+        };
         let trimmed = contents.trim();
         let url = if trimmed.starts_with("https://") {
             trimmed.to_string()
@@ -954,9 +1069,6 @@ fn resolve_gmap_path(
             .join("teams")
             .join(team)
             .join("team.gmap"),
-        _ => bundle_root
-            .join("tenants")
-            .join(tenant)
-            .join("tenant.gmap"),
+        _ => bundle_root.join("tenants").join(tenant).join("tenant.gmap"),
     }
 }

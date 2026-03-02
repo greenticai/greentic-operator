@@ -81,9 +81,7 @@ pub async fn handle_onboard_request(
 }
 
 /// Read and parse a JSON body from the request.
-async fn read_json_body(
-    req: Request<Incoming>,
-) -> Result<Value, Response<Full<Bytes>>> {
+async fn read_json_body(req: Request<Incoming>) -> Result<Value, Response<Full<Bytes>>> {
     let payload_bytes = req
         .into_body()
         .collect()

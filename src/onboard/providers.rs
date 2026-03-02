@@ -60,9 +60,7 @@ pub fn list_providers(
 /// GET /api/onboard/tenants
 ///
 /// Lists available tenants and teams from the bundle directory.
-pub fn list_tenants(
-    state: &OnboardState,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+pub fn list_tenants(state: &OnboardState) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
     let bundle_root = state.runner_host.bundle_root();
     let tenants_dir = bundle_root.join("tenants");
 
@@ -92,9 +90,7 @@ pub fn list_tenants(
                             .map(|ft| ft.is_dir())
                             .unwrap_or(false)
                         {
-                            teams.push(
-                                team_entry.file_name().to_string_lossy().to_string(),
-                            );
+                            teams.push(team_entry.file_name().to_string_lossy().to_string());
                         }
                     }
                 }
@@ -135,11 +131,7 @@ pub fn deployment_status(
     if providers_dir.exists() {
         if let Ok(entries) = std::fs::read_dir(&providers_dir) {
             for entry in entries.flatten() {
-                if entry
-                    .file_type()
-                    .map(|ft| ft.is_dir())
-                    .unwrap_or(false)
-                {
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                     let provider_id = entry.file_name().to_string_lossy().to_string();
                     // Skip internal directories (e.g. _contracts)
                     if provider_id.starts_with('_') {
@@ -162,13 +154,14 @@ pub fn deployment_status(
                         }
                     }
                     // Read metadata from config envelope
-                    let envelope_config = crate::provider_config_envelope::read_provider_config_envelope(
-                        &providers_dir,
-                        &provider_id,
-                    )
-                    .ok()
-                    .flatten()
-                    .map(|env| env.config);
+                    let envelope_config =
+                        crate::provider_config_envelope::read_provider_config_envelope(
+                            &providers_dir,
+                            &provider_id,
+                        )
+                        .ok()
+                        .flatten()
+                        .map(|env| env.config);
 
                     let mut entry_json = json!({
                         "provider_id": provider_id,
@@ -320,8 +313,7 @@ pub fn create_team(
 /// Validate an identifier: non-empty, lowercase alphanumeric + hyphens, no leading/trailing hyphens.
 fn is_valid_identifier(s: &str) -> bool {
     !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         && !s.starts_with('-')
         && !s.ends_with('-')
 }

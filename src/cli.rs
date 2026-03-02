@@ -2664,8 +2664,7 @@ impl DemoSetupWizardArgs {
                 println!("\nFlow '{setup_flow}' completed:");
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&output)
-                        .unwrap_or_else(|_| "<invalid>".into())
+                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "<invalid>".into())
                 );
             }
             demo::DemoBlockedOn::Waiting { reason, output, .. } => {
@@ -2675,8 +2674,7 @@ impl DemoSetupWizardArgs {
                 );
                 println!(
                     "Output so far: {}",
-                    serde_json::to_string_pretty(&output)
-                        .unwrap_or_else(|_| "<invalid>".into())
+                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "<invalid>".into())
                 );
             }
             demo::DemoBlockedOn::Error(err) => {

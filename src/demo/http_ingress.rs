@@ -452,8 +452,7 @@ fn route_messaging_envelopes(
                 }
             };
 
-            let provider_type =
-                runner_host.canonical_provider_type(Domain::Messaging, provider);
+            let provider_type = runner_host.canonical_provider_type(Domain::Messaging, provider);
             let send_input =
                 egress::build_send_payload(payload, &provider_type, &ctx.tenant, ctx.team.clone());
             let send_bytes = serde_json::to_vec(&send_input)?;
@@ -506,10 +505,7 @@ fn route_messaging_envelopes(
 }
 
 /// Read a card JSON from the app pack's assets directory.
-fn read_card_from_pack(
-    pack_path: &std::path::Path,
-    card_key: &str,
-) -> Option<serde_json::Value> {
+fn read_card_from_pack(pack_path: &std::path::Path, card_key: &str) -> Option<serde_json::Value> {
     let file = std::fs::File::open(pack_path).ok()?;
     let mut archive = zip::ZipArchive::new(file).ok()?;
     let asset_path = format!("assets/cards/{card_key}.json");
@@ -528,7 +524,14 @@ fn run_app_flow_safe(
     flow: &crate::messaging_universal::app::AppFlowInfo,
     envelope: &greentic_types::ChannelMessageEnvelope,
 ) -> Vec<greentic_types::ChannelMessageEnvelope> {
-    match app::run_app_flow(bundle, ctx, app_pack_path, &pack_info.pack_id, &flow.id, envelope) {
+    match app::run_app_flow(
+        bundle,
+        ctx,
+        app_pack_path,
+        &pack_info.pack_id,
+        &flow.id,
+        envelope,
+    ) {
         Ok(outputs) => outputs,
         Err(err) => {
             operator_log::error(

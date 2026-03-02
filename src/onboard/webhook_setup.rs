@@ -65,13 +65,20 @@ fn setup_telegram_webhook(
     });
 
     let token_preview = if bot_token.len() > 10 {
-        format!("{}...{}", &bot_token[..5], &bot_token[bot_token.len()-4..])
+        format!(
+            "{}...{}",
+            &bot_token[..5],
+            &bot_token[bot_token.len() - 4..]
+        )
     } else {
         "***".to_string()
     };
     operator_log::info(
         module_path!(),
-        format!("[onboard] telegram setWebhook url={} token_preview={} api={}", webhook_url, token_preview, api_base),
+        format!(
+            "[onboard] telegram setWebhook url={} token_preview={} api={}",
+            webhook_url, token_preview, api_base
+        ),
     );
 
     match ureq::post(&url)
@@ -83,10 +90,16 @@ fn setup_telegram_webhook(
             let raw_body = resp.body_mut().read_to_string().unwrap_or_default();
             operator_log::info(
                 module_path!(),
-                format!("[onboard] telegram setWebhook response status={} body={}", status, raw_body),
+                format!(
+                    "[onboard] telegram setWebhook response status={} body={}",
+                    status, raw_body
+                ),
             );
             let resp_body: Value = serde_json::from_str(&raw_body).unwrap_or(Value::Null);
-            let tg_ok = resp_body.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            let tg_ok = resp_body
+                .get("ok")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let description = resp_body
                 .get("description")
                 .and_then(Value::as_str)
@@ -120,7 +133,10 @@ fn setup_slack_manifest(
     tenant: &str,
     team: &str,
 ) -> Option<Value> {
-    let app_id = config.get("slack_app_id").and_then(Value::as_str).unwrap_or("");
+    let app_id = config
+        .get("slack_app_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let config_token = config
         .get("slack_configuration_token")
         .and_then(Value::as_str)
@@ -161,7 +177,10 @@ fn setup_slack_manifest(
 
     operator_log::info(
         module_path!(),
-        format!("[onboard] slack manifest: updating manifest for app_id={}", app_id),
+        format!(
+            "[onboard] slack manifest: updating manifest for app_id={}",
+            app_id
+        ),
     );
 
     // 3. Push updated manifest
@@ -181,7 +200,10 @@ fn slack_export_manifest(app_id: &str, config_token: &str) -> Result<Value, Stri
             let parsed: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
             let ok = parsed.get("ok").and_then(Value::as_bool).unwrap_or(false);
             if !ok {
-                let err = parsed.get("error").and_then(Value::as_str).unwrap_or("unknown");
+                let err = parsed
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
                 operator_log::error(
                     module_path!(),
                     format!("[onboard] slack apps.manifest.export failed: {err}"),
@@ -203,16 +225,28 @@ fn slack_export_manifest(app_id: &str, config_token: &str) -> Result<Value, Stri
 /// Update event_subscriptions and interactivity URLs in the manifest.
 fn slack_update_manifest_urls(manifest: &mut Value, webhook_url: &str) {
     if let Some(settings) = manifest.get_mut("settings").and_then(Value::as_object_mut) {
-        if let Some(es) = settings.get_mut("event_subscriptions").and_then(Value::as_object_mut) {
-            es.insert("request_url".to_string(), Value::String(webhook_url.to_string()));
+        if let Some(es) = settings
+            .get_mut("event_subscriptions")
+            .and_then(Value::as_object_mut)
+        {
+            es.insert(
+                "request_url".to_string(),
+                Value::String(webhook_url.to_string()),
+            );
         } else {
             settings.insert(
                 "event_subscriptions".to_string(),
                 json!({ "request_url": webhook_url }),
             );
         }
-        if let Some(ir) = settings.get_mut("interactivity").and_then(Value::as_object_mut) {
-            ir.insert("request_url".to_string(), Value::String(webhook_url.to_string()));
+        if let Some(ir) = settings
+            .get_mut("interactivity")
+            .and_then(Value::as_object_mut)
+        {
+            ir.insert(
+                "request_url".to_string(),
+                Value::String(webhook_url.to_string()),
+            );
             ir.insert("is_enabled".to_string(), Value::Bool(true));
         } else {
             settings.insert(
@@ -232,7 +266,12 @@ fn slack_update_manifest_urls(manifest: &mut Value, webhook_url: &str) {
 }
 
 /// Push the updated manifest via `apps.manifest.update`.
-fn slack_push_manifest(app_id: &str, config_token: &str, manifest: &Value, webhook_url: &str) -> Option<Value> {
+fn slack_push_manifest(
+    app_id: &str,
+    config_token: &str,
+    manifest: &Value,
+    webhook_url: &str,
+) -> Option<Value> {
     let resp = ureq::post("https://slack.com/api/apps.manifest.update")
         .header("Authorization", &format!("Bearer {config_token}"))
         .header("Content-Type", "application/json")
@@ -312,7 +351,11 @@ fn setup_webex_webhook(
     let base_name = format!("greentic:{}:{}:webex", tenant, team);
 
     let token_preview = if bot_token.len() > 10 {
-        format!("{}...{}", &bot_token[..5], &bot_token[bot_token.len()-4..])
+        format!(
+            "{}...{}",
+            &bot_token[..5],
+            &bot_token[bot_token.len() - 4..]
+        )
     } else {
         "***".to_string()
     };
@@ -338,8 +381,12 @@ fn setup_webex_webhook(
 
     // 2. Reconcile both webhook types
     let subscriptions: &[(&str, &str, &str)] = &[
-        ("messages",          "created", &base_name),
-        ("attachmentActions", "created", &format!("{base_name}:cards")),
+        ("messages", "created", &base_name),
+        (
+            "attachmentActions",
+            "created",
+            &format!("{base_name}:cards"),
+        ),
     ];
 
     let mut results = Vec::new();
@@ -347,7 +394,13 @@ fn setup_webex_webhook(
 
     for &(resource, event, name) in subscriptions {
         let result = webex_reconcile_one(
-            api_base, bot_token, &existing, name, &webhook_url, resource, event,
+            api_base,
+            bot_token,
+            &existing,
+            name,
+            &webhook_url,
+            resource,
+            event,
         );
         if let Some(ref r) = result {
             if !r.get("ok").and_then(Value::as_bool).unwrap_or(false) {
@@ -379,9 +432,9 @@ fn webex_reconcile_one(
     resource: &str,
     event: &str,
 ) -> Option<Value> {
-    let matching = existing.iter().find(|hook| {
-        hook.get("name").and_then(Value::as_str) == Some(name)
-    });
+    let matching = existing
+        .iter()
+        .find(|hook| hook.get("name").and_then(Value::as_str) == Some(name));
 
     if let Some(hook) = matching {
         let hook_id = hook.get("id").and_then(Value::as_str).unwrap_or("");
@@ -390,7 +443,10 @@ fn webex_reconcile_one(
         if current_url == target_url {
             operator_log::info(
                 module_path!(),
-                format!("[onboard] webex webhook: already up-to-date name={} id={}", name, hook_id),
+                format!(
+                    "[onboard] webex webhook: already up-to-date name={} id={}",
+                    name, hook_id
+                ),
             );
             return Some(json!({
                 "ok": true,
@@ -401,13 +457,19 @@ fn webex_reconcile_one(
 
         operator_log::info(
             module_path!(),
-            format!("[onboard] webex webhook: updating name={} id={} old_url={}", name, hook_id, current_url),
+            format!(
+                "[onboard] webex webhook: updating name={} id={} old_url={}",
+                name, hook_id, current_url
+            ),
         );
         webex_update_webhook(api_base, token, hook_id, name, target_url)
     } else {
         operator_log::info(
             module_path!(),
-            format!("[onboard] webex webhook: creating name={} resource={} event={}", name, resource, event),
+            format!(
+                "[onboard] webex webhook: creating name={} resource={} event={}",
+                name, resource, event
+            ),
         );
         webex_create_webhook_with_resource(api_base, token, name, target_url, resource, event)
     }
@@ -459,11 +521,18 @@ fn webex_create_webhook_with_resource(
             let status = resp.status().as_u16();
             let raw = resp.body_mut().read_to_string().unwrap_or_default();
             let parsed: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-            let hook_id = parsed.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let hook_id = parsed
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
 
             operator_log::info(
                 module_path!(),
-                format!("[onboard] webex webhook: created id={} status={}", hook_id, status),
+                format!(
+                    "[onboard] webex webhook: created id={} status={}",
+                    hook_id, status
+                ),
             );
 
             Some(json!({
@@ -509,7 +578,10 @@ fn webex_update_webhook(
 
             operator_log::info(
                 module_path!(),
-                format!("[onboard] webex webhook: updated id={} status={}", webhook_id, status),
+                format!(
+                    "[onboard] webex webhook: updated id={} status={}",
+                    webhook_id, status
+                ),
             );
 
             Some(json!({

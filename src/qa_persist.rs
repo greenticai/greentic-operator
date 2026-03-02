@@ -31,11 +31,7 @@ pub async fn persist_qa_secrets(
 ) -> Result<Vec<String>> {
     // Collect all question IDs — WASM components read both secret and non-secret
     // config values via the secrets API, so we must persist everything.
-    let all_question_ids: Vec<&str> = form_spec
-        .questions
-        .iter()
-        .map(|q| q.id.as_str())
-        .collect();
+    let all_question_ids: Vec<&str> = form_spec.questions.iter().map(|q| q.id.as_str()).collect();
 
     if all_question_ids.is_empty() {
         return Ok(vec![]);

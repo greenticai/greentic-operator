@@ -354,11 +354,7 @@ pub fn run_interactive_card_wizard(pack_path: &Path, provider_id: &str) -> Resul
         }
 
         // Mini command-loop: collect @input / @click until the user submits.
-        let eof = collect_card_inputs(
-            &current_card,
-            &current_card_json,
-            &mut pending_inputs,
-        )?;
+        let eof = collect_card_inputs(&current_card, &current_card_json, &mut pending_inputs)?;
         if eof {
             return Err(anyhow!("wizard cancelled (EOF)"));
         }
@@ -418,8 +414,7 @@ fn collect_card_inputs(
                 if let Some(json) = current_card_json {
                     println!(
                         "{}",
-                        serde_json::to_string_pretty(json)
-                            .unwrap_or_else(|_| "<invalid>".into())
+                        serde_json::to_string_pretty(json).unwrap_or_else(|_| "<invalid>".into())
                     );
                 }
             }
@@ -427,8 +422,7 @@ fn collect_card_inputs(
                 if let Some(card) = current_card
                     && !card.inputs.iter().any(|input| input.id == field)
                 {
-                    let ids: Vec<&str> =
-                        card.inputs.iter().map(|i| i.id.as_str()).collect();
+                    let ids: Vec<&str> = card.inputs.iter().map(|i| i.id.as_str()).collect();
                     println!("Unknown input '{field}'. Available: {}", ids.join(", "));
                     continue;
                 }
@@ -570,8 +564,8 @@ mod tests {
         let answers = json!({});
         let (card, next_q) = render_qa_card(&spec, &answers);
         assert_eq!(next_q.as_deref(), Some("api_url"));
-        let view = crate::demo::card::detect_adaptive_card_view(&card)
-            .expect("card should be detected");
+        let view =
+            crate::demo::card::detect_adaptive_card_view(&card).expect("card should be detected");
         assert!(!view.inputs.is_empty(), "card should have inputs");
         assert_eq!(view.inputs[0].id, "api_url");
     }
@@ -582,8 +576,8 @@ mod tests {
         let answers = json!({"api_url": "https://example.com"});
         let (card, next_q) = render_qa_card(&spec, &answers);
         assert_eq!(next_q.as_deref(), Some("token"));
-        let view = crate::demo::card::detect_adaptive_card_view(&card)
-            .expect("card should be detected");
+        let view =
+            crate::demo::card::detect_adaptive_card_view(&card).expect("card should be detected");
         assert!(view.inputs.iter().any(|i| i.id == "token"));
     }
 

@@ -181,8 +181,7 @@ pub fn run_end_to_end(
                 break;
             }
 
-            let canonical_type =
-                runner_host.canonical_provider_type(Domain::Messaging, provider);
+            let canonical_type = runner_host.canonical_provider_type(Domain::Messaging, provider);
             let send_input = SendPayloadInV1 {
                 v: 1,
                 provider_type: canonical_type,

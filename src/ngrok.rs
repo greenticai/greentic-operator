@@ -208,9 +208,7 @@ fn is_ngrok_url(value: &str) -> bool {
     if value.contains(char::is_whitespace) {
         return false;
     }
-    value.contains(".ngrok-free.app")
-        || value.contains(".ngrok.app")
-        || value.contains(".ngrok.io")
+    value.contains(".ngrok-free.app") || value.contains(".ngrok.app") || value.contains(".ngrok.io")
 }
 
 fn read_pid(path: &Path) -> anyhow::Result<Option<u32>> {
