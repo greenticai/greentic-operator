@@ -18,6 +18,14 @@ pub struct OnboardState {
     pub runner_host: Arc<DemoRunnerHost>,
 }
 
+pub type OnboardResponse = Response<Full<Bytes>>;
+pub type OnboardError = Box<OnboardResponse>;
+pub type OnboardResult<T = OnboardResponse> = Result<T, OnboardError>;
+
+pub fn into_error(response: OnboardResponse) -> OnboardError {
+    Box::new(response)
+}
+
 /// Dispatch onboard API requests.
 ///
 /// Routes:
@@ -31,7 +39,7 @@ pub async fn handle_onboard_request(
     req: Request<Incoming>,
     path: &str,
     runner_host: &Arc<DemoRunnerHost>,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+) -> OnboardResult {
     let state = OnboardState {
         runner_host: runner_host.clone(),
     };
@@ -73,35 +81,44 @@ pub async fn handle_onboard_request(
             let body = read_json_body(req).await?;
             providers::create_team(&state, &body)
         }
-        _ => Err(error_response(
+        _ => Err(into_error(error_response(
             StatusCode::NOT_FOUND,
             format!("unknown onboard endpoint: {sub_path}"),
-        )),
+        ))),
     }
 }
 
 /// Read and parse a JSON body from the request.
-async fn read_json_body(req: Request<Incoming>) -> Result<Value, Response<Full<Bytes>>> {
+async fn read_json_body(req: Request<Incoming>) -> OnboardResult<Value> {
     let payload_bytes = req
         .into_body()
         .collect()
         .await
         .map(|collected| collected.to_bytes())
-        .map_err(|err| error_response(StatusCode::BAD_REQUEST, format!("read body: {err}")))?;
+        .map_err(|err| {
+            into_error(error_response(
+                StatusCode::BAD_REQUEST,
+                format!("read body: {err}"),
+            ))
+        })?;
 
     if payload_bytes.is_empty() {
         return Ok(json!({}));
     }
 
-    serde_json::from_slice(&payload_bytes)
-        .map_err(|err| error_response(StatusCode::BAD_REQUEST, format!("invalid JSON: {err}")))
+    serde_json::from_slice(&payload_bytes).map_err(|err| {
+        into_error(error_response(
+            StatusCode::BAD_REQUEST,
+            format!("invalid JSON: {err}"),
+        ))
+    })
 }
 
-pub fn json_ok(value: Value) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+pub fn json_ok(value: Value) -> OnboardResult {
     Ok(json_response(StatusCode::OK, value))
 }
 
-pub fn json_response(status: StatusCode, value: Value) -> Response<Full<Bytes>> {
+pub fn json_response(status: StatusCode, value: Value) -> OnboardResponse {
     let body = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
     Response::builder()
         .status(status)
@@ -117,7 +134,7 @@ pub fn json_response(status: StatusCode, value: Value) -> Response<Full<Bytes>> 
         })
 }
 
-pub fn error_response(status: StatusCode, message: impl Into<String>) -> Response<Full<Bytes>> {
+pub fn error_response(status: StatusCode, message: impl Into<String>) -> OnboardResponse {
     json_response(
         status,
         json!({

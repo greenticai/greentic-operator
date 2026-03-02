@@ -1,18 +1,15 @@
-use http_body_util::Full;
-use hyper::{Response, StatusCode, body::Bytes};
+use hyper::StatusCode;
 use serde_json::{Value, json};
 
 use crate::domains::{self, Domain};
 use crate::operator_log;
 
-use super::api::{OnboardState, error_response, json_ok};
+use super::api::{OnboardResult, OnboardState, error_response, into_error, json_ok};
 
 /// GET /api/onboard/providers
 ///
 /// Lists available provider packs across all domains.
-pub fn list_providers(
-    state: &OnboardState,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+pub fn list_providers(state: &OnboardState) -> OnboardResult {
     let bundle_root = state.runner_host.bundle_root();
     let mut providers = Vec::new();
 
@@ -22,10 +19,10 @@ pub fn list_providers(
                 module_path!(),
                 format!("[onboard] discover packs domain={:?}: {err}", domain),
             );
-            error_response(
+            into_error(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("discover packs: {err}"),
-            )
+            ))
         })?;
 
         let domain_name = domains::domain_name(domain);
@@ -60,7 +57,7 @@ pub fn list_providers(
 /// GET /api/onboard/tenants
 ///
 /// Lists available tenants and teams from the bundle directory.
-pub fn list_tenants(state: &OnboardState) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+pub fn list_tenants(state: &OnboardState) -> OnboardResult {
     let bundle_root = state.runner_host.bundle_root();
     let tenants_dir = bundle_root.join("tenants");
 
@@ -68,10 +65,10 @@ pub fn list_tenants(state: &OnboardState) -> Result<Response<Full<Bytes>>, Respo
 
     if tenants_dir.exists() {
         let entries = std::fs::read_dir(&tenants_dir).map_err(|err| {
-            error_response(
+            into_error(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("read tenants dir: {err}"),
-            )
+            ))
         })?;
 
         for entry in entries.flatten() {
@@ -120,9 +117,7 @@ pub fn list_tenants(state: &OnboardState) -> Result<Response<Full<Bytes>>, Respo
 /// GET /api/onboard/status
 ///
 /// Returns deployment status for configured providers.
-pub fn deployment_status(
-    state: &OnboardState,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+pub fn deployment_status(state: &OnboardState) -> OnboardResult {
     let bundle_root = state.runner_host.bundle_root();
     let mut deployed = Vec::new();
 
@@ -203,10 +198,7 @@ pub fn deployment_status(
 ///
 /// Creates a new tenant directory.
 /// Body: `{ "tenant": "my-tenant" }`
-pub fn create_tenant(
-    state: &OnboardState,
-    body: &Value,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+pub fn create_tenant(state: &OnboardState, body: &Value) -> OnboardResult {
     let tenant = body["tenant"]
         .as_str()
         .unwrap_or("")
@@ -214,16 +206,16 @@ pub fn create_tenant(
         .to_ascii_lowercase();
 
     if tenant.is_empty() {
-        return Err(error_response(
+        return Err(into_error(error_response(
             StatusCode::BAD_REQUEST,
             "tenant name is required",
-        ));
+        )));
     }
     if !is_valid_identifier(&tenant) {
-        return Err(error_response(
+        return Err(into_error(error_response(
             StatusCode::BAD_REQUEST,
             "tenant name must be alphanumeric with hyphens only",
-        ));
+        )));
     }
 
     let bundle_root = state.runner_host.bundle_root();
@@ -232,10 +224,10 @@ pub fn create_tenant(
             module_path!(),
             format!("[onboard] create tenant {tenant}: {err}"),
         );
-        error_response(
+        into_error(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("create tenant: {err}"),
-        )
+        ))
     })?;
 
     operator_log::info(
@@ -250,10 +242,7 @@ pub fn create_tenant(
 ///
 /// Creates a new team under a tenant.
 /// Body: `{ "tenant": "my-tenant", "team": "sales" }`
-pub fn create_team(
-    state: &OnboardState,
-    body: &Value,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+pub fn create_team(state: &OnboardState, body: &Value) -> OnboardResult {
     let tenant = body["tenant"]
         .as_str()
         .unwrap_or("")
@@ -266,28 +255,28 @@ pub fn create_team(
         .to_ascii_lowercase();
 
     if tenant.is_empty() {
-        return Err(error_response(
+        return Err(into_error(error_response(
             StatusCode::BAD_REQUEST,
             "tenant name is required",
-        ));
+        )));
     }
     if team.is_empty() {
-        return Err(error_response(
+        return Err(into_error(error_response(
             StatusCode::BAD_REQUEST,
             "team name is required",
-        ));
+        )));
     }
     if !is_valid_identifier(&tenant) {
-        return Err(error_response(
+        return Err(into_error(error_response(
             StatusCode::BAD_REQUEST,
             "tenant name must be alphanumeric with hyphens only",
-        ));
+        )));
     }
     if !is_valid_identifier(&team) {
-        return Err(error_response(
+        return Err(into_error(error_response(
             StatusCode::BAD_REQUEST,
             "team name must be alphanumeric with hyphens only",
-        ));
+        )));
     }
 
     let bundle_root = state.runner_host.bundle_root();
@@ -296,10 +285,10 @@ pub fn create_team(
             module_path!(),
             format!("[onboard] create team {tenant}/{team}: {err}"),
         );
-        error_response(
+        into_error(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("create team: {err}"),
-        )
+        ))
     })?;
 
     operator_log::info(

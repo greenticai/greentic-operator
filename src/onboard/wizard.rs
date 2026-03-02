@@ -1,5 +1,4 @@
-use http_body_util::Full;
-use hyper::{Response, StatusCode, body::Bytes};
+use hyper::StatusCode;
 use serde_json::{Value, json};
 
 use crate::component_qa_ops::{self, QaMode};
@@ -11,7 +10,7 @@ use crate::setup_to_formspec;
 
 use qa_spec::{build_render_payload, render_json_ui};
 
-use super::api::{OnboardState, error_response, json_ok};
+use super::api::{OnboardResult, OnboardState, error_response, into_error, json_ok};
 use super::webhook_setup;
 
 // ── Request parsing (shared across all 3 endpoints) ─────────────────────────
@@ -35,11 +34,15 @@ impl RequestParams {
     }
 }
 
-#[allow(clippy::result_large_err)]
-fn parse_request(body: &Value) -> Result<RequestParams, Response<Full<Bytes>>> {
+fn parse_request(body: &Value) -> OnboardResult<RequestParams> {
     let provider_id = body["provider_id"]
         .as_str()
-        .ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "missing provider_id"))?
+        .ok_or_else(|| {
+            into_error(error_response(
+                StatusCode::BAD_REQUEST,
+                "missing provider_id",
+            ))
+        })?
         .to_string();
     let domain = parse_domain(body)?;
     let answers = body.get("answers").cloned().unwrap_or_else(|| json!({}));
@@ -126,7 +129,10 @@ fn load_form_spec_with_fallback(
 /// The wizard saves config under setup.yaml field names, but the WASM component
 /// reads secrets via its own constant (e.g. `SLACK_BOT_TOKEN` → `slack_bot_token`).
 /// This table bridges that gap by copying the value to the runtime key name.
-const PROVIDER_SECRET_ALIASES: &[(&str, &[(&str, &str, bool)])] = &[
+type ProviderSecretAlias = (&'static str, &'static str, bool);
+type ProviderSecretAliasEntry = (&'static str, &'static [ProviderSecretAlias]);
+
+const PROVIDER_SECRET_ALIASES: &[ProviderSecretAliasEntry] = &[
     (
         "messaging-telegram",
         &[("bot_token", "telegram_bot_token", true)],
@@ -281,21 +287,17 @@ fn inject_public_url_meta(
 /// Request body: `{ "provider_id": "messaging-telegram", "domain": "messaging",
 ///                  "tenant": "default", "team": null, "mode": "setup",
 ///                  "answers": {} }`
-#[allow(clippy::result_large_err)]
-pub fn get_form_spec(
-    state: &OnboardState,
-    body: &Value,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+pub fn get_form_spec(state: &OnboardState, body: &Value) -> OnboardResult {
     let params = parse_request(body)?;
     let bundle_root = state.runner_host.bundle_root();
     let pack = find_provider_pack(bundle_root, params.domain, &params.provider_id)?;
 
     let form_spec = load_form_spec_with_fallback(bundle_root, params.domain, &pack, &params)
         .ok_or_else(|| {
-            error_response(
+            into_error(error_response(
                 StatusCode::NOT_FOUND,
                 format!("no qa-spec or setup.yaml found in {}", pack.file_name),
-            )
+            ))
         })?;
 
     // For upgrade mode: pre-fill answers with existing config values
@@ -330,21 +332,17 @@ pub fn get_form_spec(
 ///
 /// Request body: `{ "provider_id": "messaging-telegram", "domain": "messaging",
 ///                  "tenant": "default", "answers": { ... } }`
-#[allow(clippy::result_large_err)]
-pub fn validate_answers(
-    state: &OnboardState,
-    body: &Value,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+pub fn validate_answers(state: &OnboardState, body: &Value) -> OnboardResult {
     let params = parse_request(body)?;
     let bundle_root = state.runner_host.bundle_root();
     let pack = find_provider_pack(bundle_root, params.domain, &params.provider_id)?;
 
     let form_spec = load_form_spec_with_fallback(bundle_root, params.domain, &pack, &params)
         .ok_or_else(|| {
-            error_response(
+            into_error(error_response(
                 StatusCode::NOT_FOUND,
                 format!("no qa-spec found for {}", params.provider_id),
-            )
+            ))
         })?;
 
     let ctx = json!({ "tenant": params.tenant(), "team": params.team() });
@@ -363,11 +361,7 @@ pub fn validate_answers(
 ///
 /// Request body: `{ "provider_id": "messaging-telegram", "domain": "messaging",
 ///                  "tenant": "default", "team": null, "answers": { ... } }`
-#[allow(clippy::result_large_err)]
-pub fn submit_answers(
-    state: &OnboardState,
-    body: &Value,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
+pub fn submit_answers(state: &OnboardState, body: &Value) -> OnboardResult {
     let params = parse_request(body)?;
     let bundle_root = state.runner_host.bundle_root();
     let pack = find_provider_pack(bundle_root, params.domain, &params.provider_id)?;
@@ -410,10 +404,10 @@ pub fn submit_answers(
             module_path!(),
             format!("[onboard] apply-answers failed: {err}"),
         );
-        error_response(
+        into_error(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("apply-answers failed: {err}"),
-        )
+        ))
     })?;
 
     let mut config = match config {
@@ -481,10 +475,10 @@ pub fn submit_answers(
         ))
         .map_err(|err| {
             operator_log::error(module_path!(), format!("[onboard] persist failed: {err}"));
-            error_response(
+            into_error(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("persist failed: {err}"),
-            )
+            ))
         })?;
     let (secrets_saved, config_written) = persist_result;
 
@@ -496,10 +490,10 @@ pub fn submit_answers(
             module_path!(),
             format!("[onboard] gmap upsert failed: {err}"),
         );
-        return Err(error_response(
+        return Err(into_error(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("gmap update failed: {err}"),
-        ));
+        )));
     }
 
     if params.mode == QaMode::Remove {
@@ -887,17 +881,16 @@ fn apply_i18n_to_form_spec(
     );
 }
 
-#[allow(clippy::result_large_err)]
 fn find_provider_pack(
     bundle_root: &std::path::Path,
     domain: Domain,
     provider_id: &str,
-) -> Result<ProviderPack, Response<Full<Bytes>>> {
+) -> OnboardResult<ProviderPack> {
     let packs = domains::discover_provider_packs(bundle_root, domain).map_err(|err| {
-        error_response(
+        into_error(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("discover packs: {err}"),
-        )
+        ))
     })?;
 
     packs
@@ -911,24 +904,23 @@ fn find_provider_pack(
                     == provider_id
         })
         .ok_or_else(|| {
-            error_response(
+            into_error(error_response(
                 StatusCode::NOT_FOUND,
                 format!("provider pack not found: {provider_id}"),
-            )
+            ))
         })
 }
 
-#[allow(clippy::result_large_err)]
-fn parse_domain(body: &Value) -> Result<Domain, Response<Full<Bytes>>> {
+fn parse_domain(body: &Value) -> OnboardResult<Domain> {
     let domain_str = body["domain"].as_str().unwrap_or("messaging");
     match domain_str {
         "messaging" => Ok(Domain::Messaging),
         "events" => Ok(Domain::Events),
         "secrets" => Ok(Domain::Secrets),
-        _ => Err(error_response(
+        _ => Err(into_error(error_response(
             StatusCode::BAD_REQUEST,
             format!("unknown domain: {domain_str}"),
-        )),
+        ))),
     }
 }
 

@@ -167,7 +167,9 @@ async fn handle_request_inner(
 
     // Onboard API routes: /api/onboard/*
     if path.starts_with("/api/onboard") {
-        return crate::onboard::api::handle_onboard_request(req, &path, &state.runner_host).await;
+        return crate::onboard::api::handle_onboard_request(req, &path, &state.runner_host)
+            .await
+            .map_err(|err| *err);
     }
 
     // Direct Line routes: /token, /v3/directline/*, /directline/*
