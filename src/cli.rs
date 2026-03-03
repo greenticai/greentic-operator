@@ -2709,7 +2709,7 @@ fn log_capability_bootstrap_report(
     if pending_setup.is_empty() {
         operator_log::info(
             module_path!(),
-            "capability setup plan: no capabilities requiring setup found".to_string(),
+            "capability setup plan: no capabilities requiring setup found",
         );
     } else {
         let ids = pending_setup
