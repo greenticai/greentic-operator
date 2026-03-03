@@ -1954,6 +1954,29 @@ impl DemoUpArgs {
                 .is_enabled(discovery.domains.messaging);
             let explicit_nats_url = self.nats_url.clone();
             let domains_to_setup = self.domain.resolve_domains(Some(&discovery));
+            let tenant_ref = self
+                .tenant
+                .clone()
+                .unwrap_or_else(|| DEMO_DEFAULT_TENANT.to_string());
+            let team_ref = self.team.clone();
+            let capability_secrets_handle =
+                secrets_gate::resolve_secrets_manager(&bundle, &tenant_ref, team_ref.as_deref())?;
+            let capability_runner = DemoRunnerHost::new(
+                bundle.clone(),
+                &discovery,
+                self.runner_binary.clone(),
+                capability_secrets_handle.clone(),
+                debug_enabled,
+            )?;
+            log_capability_bootstrap_report(
+                &capability_runner,
+                &OperatorContext {
+                    tenant: tenant_ref.clone(),
+                    team: team_ref.clone(),
+                    correlation_id: None,
+                },
+                &domains_to_setup,
+            );
 
             let mut cloudflared_config = match self.cloudflared {
                 CloudflaredModeArg::Off => None,
@@ -2541,6 +2564,27 @@ impl DemoSetupArgs {
             Format::Json => PlanFormat::Json,
             Format::Yaml => PlanFormat::Yaml,
         };
+        let setup_secrets_handle = secrets_gate::resolve_secrets_manager(
+            &self.bundle,
+            &self.tenant,
+            self.team.as_deref(),
+        )?;
+        let setup_runner = DemoRunnerHost::new(
+            self.bundle.clone(),
+            &discovery,
+            self.runner_binary.clone(),
+            setup_secrets_handle,
+            demo_debug_enabled(),
+        )?;
+        log_capability_bootstrap_report(
+            &setup_runner,
+            &OperatorContext {
+                tenant: self.tenant.clone(),
+                team: self.team.clone(),
+                correlation_id: None,
+            },
+            &domains,
+        );
         for domain in domains {
             let discovered_providers = match domain {
                 Domain::Messaging | Domain::Events => Some(
@@ -2584,6 +2628,134 @@ impl DemoSetupArgs {
             })?;
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CapabilityPriority {
+    Required,
+    Recommended,
+}
+
+struct CapabilityExpectation {
+    cap_id: &'static str,
+    priority: CapabilityPriority,
+}
+
+fn capability_expectations_for_domains(domains: &[Domain]) -> Vec<CapabilityExpectation> {
+    let mut out = Vec::new();
+    let has_messaging = domains.contains(&Domain::Messaging);
+    let has_events = domains.contains(&Domain::Events);
+    let has_secrets = domains.contains(&Domain::Secrets);
+
+    if has_messaging {
+        out.push(CapabilityExpectation {
+            cap_id: "greentic.cap.messaging.provider.v1",
+            priority: CapabilityPriority::Required,
+        });
+    }
+    if has_events {
+        out.push(CapabilityExpectation {
+            cap_id: "greentic.cap.events.provider.v1",
+            priority: CapabilityPriority::Required,
+        });
+    }
+    if has_secrets {
+        out.push(CapabilityExpectation {
+            cap_id: "greentic.cap.secrets.store.v1",
+            priority: CapabilityPriority::Required,
+        });
+    }
+    if has_messaging || has_events {
+        out.push(CapabilityExpectation {
+            cap_id: "greentic.cap.oauth.broker.v1",
+            priority: CapabilityPriority::Recommended,
+        });
+        out.push(CapabilityExpectation {
+            cap_id: "greentic.cap.mcp.exec.v1",
+            priority: CapabilityPriority::Recommended,
+        });
+    }
+
+    out
+}
+
+fn log_capability_bootstrap_report(
+    runner_host: &DemoRunnerHost,
+    ctx: &OperatorContext,
+    domains: &[Domain],
+) {
+    let scope = ResolveScope {
+        env: std::env::var("GREENTIC_ENV").ok(),
+        tenant: Some(ctx.tenant.clone()),
+        team: ctx.team.clone(),
+    };
+    let expectations = capability_expectations_for_domains(domains);
+    let mut missing_required = Vec::new();
+    let mut missing_recommended = Vec::new();
+    for item in &expectations {
+        let resolved = runner_host.resolve_capability(item.cap_id, None, scope.clone());
+        if resolved.is_none() {
+            match item.priority {
+                CapabilityPriority::Required => missing_required.push(item.cap_id.to_string()),
+                CapabilityPriority::Recommended => {
+                    missing_recommended.push(item.cap_id.to_string())
+                }
+            }
+        }
+    }
+
+    let pending_setup = runner_host.capability_setup_plan(ctx);
+    if pending_setup.is_empty() {
+        operator_log::info(
+            module_path!(),
+            "capability setup plan: no capabilities requiring setup found".to_string(),
+        );
+    } else {
+        let ids = pending_setup
+            .iter()
+            .map(|binding| format!("{}@{}", binding.cap_id, binding.stable_id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        operator_log::info(
+            module_path!(),
+            format!(
+                "capability setup plan pending={} [{}]",
+                pending_setup.len(),
+                ids
+            ),
+        );
+    }
+
+    if !missing_required.is_empty() {
+        let joined = missing_required.join(", ");
+        operator_log::warn(
+            module_path!(),
+            format!("missing required capabilities for setup/start: {joined}"),
+        );
+        eprintln!(
+            "{}",
+            operator_i18n::trf(
+                "cli.capability.bootstrap.missing_required",
+                "Warning: missing required capabilities: {}",
+                &[&joined]
+            )
+        );
+    }
+    if !missing_recommended.is_empty() {
+        let joined = missing_recommended.join(", ");
+        operator_log::warn(
+            module_path!(),
+            format!("missing recommended capabilities for setup/start: {joined}"),
+        );
+        eprintln!(
+            "{}",
+            operator_i18n::trf(
+                "cli.capability.bootstrap.missing_recommended",
+                "Note: missing recommended capabilities: {}",
+                &[&joined]
+            )
+        );
     }
 }
 
