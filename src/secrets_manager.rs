@@ -198,6 +198,7 @@ mod tests {
 
     #[test]
     fn override_env_wins() {
+        let _env_guard = crate::test_env_lock().lock().unwrap();
         let dir = tempdir().unwrap();
         let alt = dir.path().join("alt.gtpack");
         fs::write(&alt, "").unwrap();

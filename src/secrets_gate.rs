@@ -668,13 +668,11 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
     use tempfile::tempdir;
     use tokio::runtime::Runtime;
     use zip::ZipWriter;
     use zip::write::FileOptions;
 
-    static ENV_VAR_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
     static PACK_FIXTURE: Lazy<PackFixture> = Lazy::new(build_test_pack);
 
     struct PackFixture {
@@ -805,7 +803,7 @@ mod tests {
         let report =
             runtime.block_on(async { apply_seed(&store, &seed, ApplyOptions::default()).await });
         assert_eq!(report.ok, 1);
-        let env_guard = ENV_VAR_LOCK.lock().unwrap();
+        let env_guard = crate::test_env_lock().lock().unwrap();
         unsafe {
             env::set_var("GREENTIC_DEV_SECRETS_PATH", store_path.clone());
         }
@@ -848,7 +846,7 @@ mod tests {
         let report =
             runtime.block_on(async { apply_seed(&store, &seed, ApplyOptions::default()).await });
         assert_eq!(report.ok, 1);
-        let env_guard = ENV_VAR_LOCK.lock().unwrap();
+        let env_guard = crate::test_env_lock().lock().unwrap();
         unsafe {
             env::set_var("GREENTIC_DEV_SECRETS_PATH", store_path);
         }
@@ -891,7 +889,7 @@ mod tests {
         let report =
             runtime.block_on(async { apply_seed(&store, &seed, ApplyOptions::default()).await });
         assert_eq!(report.ok, 1);
-        let env_guard = ENV_VAR_LOCK.lock().unwrap();
+        let env_guard = crate::test_env_lock().lock().unwrap();
         unsafe {
             env::set_var("GREENTIC_DEV_SECRETS_PATH", store_path.clone());
         }
@@ -956,7 +954,7 @@ mod tests {
         );
         let runtime = Runtime::new()?;
         {
-            let _env_guard = ENV_VAR_LOCK.lock().unwrap();
+            let _env_guard = crate::test_env_lock().lock().unwrap();
             unsafe {
                 env::set_var(&secret_uri, secret_value);
             }
@@ -976,7 +974,7 @@ mod tests {
         let team = "default";
         let pack_dir = secrets_pack_dir(bundle_root.path(), tenant, team);
         let _ = write_secrets_pack(&pack_dir, "bad-backend.gtpack", r#"{"backend":"vault"}"#)?;
-        let env_guard = ENV_VAR_LOCK.lock().unwrap();
+        let env_guard = crate::test_env_lock().lock().unwrap();
         unsafe {
             env::remove_var(ENV_ALLOW_ENV_SECRETS);
         }
@@ -993,7 +991,7 @@ mod tests {
         let team = "default";
         let pack_dir = secrets_pack_dir(bundle_root.path(), tenant, team);
         let _ = write_secrets_pack(&pack_dir, "bad-backend.gtpack", r#"{"backend":"vault"}"#)?;
-        let env_guard = ENV_VAR_LOCK.lock().unwrap();
+        let env_guard = crate::test_env_lock().lock().unwrap();
         unsafe {
             env::set_var(ENV_ALLOW_ENV_SECRETS, "1");
         }
