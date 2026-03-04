@@ -27,6 +27,12 @@ bin = ["greentic-operator"]
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-fmt = "zip"
 
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-fmt = "tgz"
+
 [[bin]]
 name = "greentic-operator"
 path = "src/main.rs"
