@@ -43,6 +43,7 @@ use crate::operator_i18n;
 use crate::operator_log;
 use crate::project;
 use crate::provider_registry;
+use crate::qa_setup_wizard;
 use crate::runner_exec;
 use crate::runner_integration;
 use crate::runtime_state::RuntimePaths;
@@ -131,6 +132,8 @@ enum DemoSubcommand {
         about = "Alias of wizard. Plan or create a demo bundle from pack refs and allow rules"
     )]
     Wizard(DemoWizardArgs),
+    #[command(about = "Run interactive card-based setup wizard for a provider pack")]
+    SetupWizard(DemoSetupWizardArgs),
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -154,9 +157,16 @@ enum CloudflaredModeArg {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+enum NgrokModeArg {
+    On,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum RestartTarget {
     All,
     Cloudflared,
+    Ngrok,
     Nats,
     Gateway,
     Egress,
@@ -277,6 +287,14 @@ struct DemoUpArgs {
         help = "Explicit path to the cloudflared binary used when cloudflared mode is on."
     )]
     cloudflared_binary: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = NgrokModeArg::Off, help_heading = "Optional options", help = "Whether to start ngrok for webhook tunneling (alternative to cloudflared).")]
+    ngrok: NgrokModeArg,
+    #[arg(
+        long,
+        help_heading = "Optional options",
+        help = "Explicit path to the ngrok binary used when ngrok mode is on."
+    )]
+    ngrok_binary: Option<PathBuf>,
     #[arg(
         long,
         value_enum,
@@ -473,7 +491,7 @@ struct DemoPolicyArgs {
 #[command(
     about = "Plan/create a demo bundle with pack refs and allow rules.",
     long_about = "Builds a deterministic wizard plan first. Execution reuses the same gmap + resolver + resolved-copy lifecycle as demo allow.",
-    after_help = "Main options:\n  --mode <create|update|remove>\n  --bundle <DIR> (or provide in --answers/--qa-answers)\n\nOptional options:\n  --answers <PATH>\n  --qa-answers <PATH> (legacy alias)\n  --emit-answers <PATH>\n  --schema-version <VER>\n  --migrate\n  --validate\n  --apply\n  --catalog-pack <ID> (repeatable)\n  --pack-ref <REF> (repeatable, oci://|repo://|store://)\n  --provider-registry <REF>\n  --locale <TAG> (default: detected from system locale)\n  --tenant <TENANT> (default: demo)\n  --team <TEAM>\n  --target <tenant[:team]> (repeatable)\n  --allow <PACK[/FLOW[/NODE]]> (repeatable)\n  --execute\n  --dry-run\n  --offline\n  --verbose\n  --run-setup"
+    after_help = "Main options:\n  --mode <create|update|remove>\n  --bundle <DIR> (or provide in --answers/--qa-answers)\n\nOptional options:\n  --answers <PATH>\n  --qa-answers <PATH> (legacy alias)\n  --emit-answers <PATH>\n  --schema-version <VER>\n  --migrate\n  --validate\n  --apply\n  --catalog-pack <ID> (repeatable)\n  --pack-ref <REF> (repeatable, oci://|repo://|store://)\n  --provider-registry <REF>\n  --provider-registry-refresh\n  --locale <TAG> (default: detected from system locale)\n  --tenant <TENANT> (default: demo)\n  --team <TEAM>\n  --target <tenant[:team]> (repeatable)\n  --allow <PACK[/FLOW[/NODE]]> (repeatable)\n  --execute\n  --dry-run\n  --offline\n  --verbose\n  --run-setup"
 )]
 struct DemoWizardArgs {
     #[arg(long, value_enum, default_value_t = WizardModeArg::Create)]
@@ -532,9 +550,14 @@ struct DemoWizardArgs {
     pack_refs: Vec<String>,
     #[arg(
         long = "provider-registry",
-        help = "Provider registry override (file://<path> or local path)."
+        help = "Provider registry override (oci://, repo://, store://, file://<path>, or local path)."
     )]
     provider_registry: Option<String>,
+    #[arg(
+        long = "provider-registry-refresh",
+        help = "Refresh provider registry from remote source when possible (falls back to cache on failure)."
+    )]
+    provider_registry_refresh: bool,
     #[arg(long, default_value = "demo", help = "Tenant for allow rules.")]
     tenant: String,
     #[arg(long, help = "Optional team for allow rules.")]
@@ -571,6 +594,23 @@ struct DemoWizardArgs {
     run_setup: bool,
     #[arg(long, help = "Optional JSON/YAML setup-input passed to setup runner.")]
     setup_input: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+#[command(about = "Run interactive card-based setup wizard for a provider pack.")]
+struct DemoSetupWizardArgs {
+    #[arg(long, help = "Path to the .gtpack file.")]
+    pack: PathBuf,
+    #[arg(long, help = "Provider ID (default: derived from pack manifest).")]
+    provider: Option<String>,
+    #[arg(long, default_value = "demo", help = "Tenant ID.")]
+    tenant: String,
+    #[arg(long, help = "Team ID.")]
+    team: Option<String>,
+    #[arg(long, help = "Setup flow to run (default: setup_default).")]
+    flow: Option<String>,
+    #[arg(long, help = "Path to demo bundle (for secrets resolution).")]
+    bundle: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -613,6 +653,8 @@ struct WizardQaAnswers {
     allow_paths: Vec<String>,
     #[serde(default)]
     providers: Vec<WizardProviderAnswer>,
+    #[serde(default)]
+    custom_provider_refs: Vec<WizardCustomProviderRefAnswer>,
     #[serde(default)]
     update_ops: Vec<WizardUpdateOpAnswer>,
     #[serde(default)]
@@ -674,6 +716,13 @@ enum WizardProviderAnswer {
         provider_id: Option<String>,
         id: Option<String>,
     },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+enum WizardCustomProviderRefAnswer {
+    Ref(String),
+    Item { pack_ref: String },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1811,6 +1860,7 @@ impl DemoCommand {
             DemoSubcommand::Capability(args) => args.run(),
             DemoSubcommand::Run(args) => args.run(ctx),
             DemoSubcommand::Wizard(args) => args.run(),
+            DemoSubcommand::SetupWizard(args) => args.run(),
         }
     }
 }
@@ -1953,6 +2003,29 @@ impl DemoUpArgs {
                 .is_enabled(discovery.domains.messaging);
             let explicit_nats_url = self.nats_url.clone();
             let domains_to_setup = self.domain.resolve_domains(Some(&discovery));
+            let tenant_ref = self
+                .tenant
+                .clone()
+                .unwrap_or_else(|| DEMO_DEFAULT_TENANT.to_string());
+            let team_ref = self.team.clone();
+            let capability_secrets_handle =
+                secrets_gate::resolve_secrets_manager(&bundle, &tenant_ref, team_ref.as_deref())?;
+            let capability_runner = DemoRunnerHost::new(
+                bundle.clone(),
+                &discovery,
+                self.runner_binary.clone(),
+                capability_secrets_handle.clone(),
+                debug_enabled,
+            )?;
+            log_capability_bootstrap_report(
+                &capability_runner,
+                &OperatorContext {
+                    tenant: tenant_ref.clone(),
+                    team: team_ref.clone(),
+                    correlation_id: None,
+                },
+                &domains_to_setup,
+            );
 
             let mut cloudflared_config = match self.cloudflared {
                 CloudflaredModeArg::Off => None,
@@ -1974,12 +2047,32 @@ impl DemoUpArgs {
                 }
             };
 
+            let mut ngrok_config = match self.ngrok {
+                NgrokModeArg::Off => None,
+                NgrokModeArg::On => {
+                    let explicit = self.ngrok_binary.clone();
+                    let binary = bin_resolver::resolve_binary(
+                        "ngrok",
+                        &ResolveCtx {
+                            config_dir: bundle.clone(),
+                            explicit_path: explicit,
+                        },
+                    )?;
+                    Some(crate::ngrok::NgrokConfig {
+                        binary,
+                        local_port: 8080,
+                        extra_args: Vec::new(),
+                        restart: restart.contains("ngrok"),
+                    })
+                }
+            };
+
             let mut public_base_url = self.public_base_url.clone();
             let team_id = self
                 .team
                 .clone()
                 .unwrap_or_else(|| DEMO_DEFAULT_TEAM.to_string());
-            let mut started_cloudflared_early = false;
+            let mut started_tunnel_early = false;
             if public_base_url.is_none()
                 && self.setup_input.is_some()
                 && let Some(cfg) = cloudflared_config.as_mut()
@@ -2017,10 +2110,50 @@ impl DemoUpArgs {
                     )
                 );
                 public_base_url = Some(handle.url.clone());
-                started_cloudflared_early = true;
+                started_tunnel_early = true;
             }
 
-            if started_cloudflared_early && let Some(cfg) = cloudflared_config.as_mut() {
+            if public_base_url.is_none()
+                && self.setup_input.is_some()
+                && let Some(cfg) = ngrok_config.as_mut()
+            {
+                let paths = RuntimePaths::new(&state_dir, &tenant, &team_id);
+                let setup_log = operator_log::reserve_service_log(&log_dir, "ngrok")
+                    .with_context(|| "unable to open ngrok.log")?;
+                operator_log::info(
+                    module_path!(),
+                    format!("starting setup-mode ngrok log={}", setup_log.display()),
+                );
+                let handle = crate::ngrok::start_tunnel(&paths, cfg, &setup_log)?;
+                operator_log::info(
+                    module_path!(),
+                    format!(
+                        "ngrok setup mode ready url={} log={}",
+                        handle.url,
+                        setup_log.display()
+                    ),
+                );
+                let domain_labels = domains_to_setup
+                    .iter()
+                    .map(|domain| domains::domain_name(*domain))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                println!(
+                    "{}",
+                    operator_i18n::trf(
+                        "cli.start.public_url_setup_domains",
+                        "Public URL (ngrok setup domains={}): {}",
+                        &[&domain_labels, &handle.url]
+                    )
+                );
+                public_base_url = Some(handle.url.clone());
+                started_tunnel_early = true;
+            }
+
+            if started_tunnel_early && let Some(cfg) = cloudflared_config.as_mut() {
+                cfg.restart = false;
+            }
+            if started_tunnel_early && let Some(cfg) = ngrok_config.as_mut() {
                 cfg.restart = false;
             }
 
@@ -2056,6 +2189,7 @@ impl DemoUpArgs {
                             nats_mode,
                             messaging_enabled,
                             cloudflared_config.clone(),
+                            ngrok_config.clone(),
                             &log_dir,
                             debug_enabled,
                         )
@@ -2246,6 +2380,25 @@ impl DemoUpArgs {
                 })
             }
         };
+        let ngrok = match self.ngrok {
+            NgrokModeArg::Off => None,
+            NgrokModeArg::On => {
+                let explicit = self.ngrok_binary.clone();
+                let binary = bin_resolver::resolve_binary(
+                    "ngrok",
+                    &ResolveCtx {
+                        config_dir: config_dir.clone(),
+                        explicit_path: explicit,
+                    },
+                )?;
+                Some(crate::ngrok::NgrokConfig {
+                    binary,
+                    local_port: demo_config.services.gateway.port,
+                    extra_args: Vec::new(),
+                    restart: restart.contains("ngrok"),
+                })
+            }
+        };
 
         let provider_setup_input = self.setup_input.clone();
         let timer_runner_binary = self.runner_binary.clone();
@@ -2270,6 +2423,7 @@ impl DemoUpArgs {
             &config_path,
             &demo_config,
             cloudflared,
+            ngrok,
             &restart,
             provider_options,
             &log_dir,
@@ -2459,6 +2613,27 @@ impl DemoSetupArgs {
             Format::Json => PlanFormat::Json,
             Format::Yaml => PlanFormat::Yaml,
         };
+        let setup_secrets_handle = secrets_gate::resolve_secrets_manager(
+            &self.bundle,
+            &self.tenant,
+            self.team.as_deref(),
+        )?;
+        let setup_runner = DemoRunnerHost::new(
+            self.bundle.clone(),
+            &discovery,
+            self.runner_binary.clone(),
+            setup_secrets_handle,
+            demo_debug_enabled(),
+        )?;
+        log_capability_bootstrap_report(
+            &setup_runner,
+            &OperatorContext {
+                tenant: self.tenant.clone(),
+                team: self.team.clone(),
+                correlation_id: None,
+            },
+            &domains,
+        );
         for domain in domains {
             let discovered_providers = match domain {
                 Domain::Messaging | Domain::Events => Some(
@@ -2505,6 +2680,134 @@ impl DemoSetupArgs {
     }
 }
 
+#[derive(Clone, Copy)]
+enum CapabilityPriority {
+    Required,
+    Recommended,
+}
+
+struct CapabilityExpectation {
+    cap_id: &'static str,
+    priority: CapabilityPriority,
+}
+
+fn capability_expectations_for_domains(domains: &[Domain]) -> Vec<CapabilityExpectation> {
+    let mut out = Vec::new();
+    let has_messaging = domains.contains(&Domain::Messaging);
+    let has_events = domains.contains(&Domain::Events);
+    let has_secrets = domains.contains(&Domain::Secrets);
+
+    if has_messaging {
+        out.push(CapabilityExpectation {
+            cap_id: "greentic.cap.messaging.provider.v1",
+            priority: CapabilityPriority::Required,
+        });
+    }
+    if has_events {
+        out.push(CapabilityExpectation {
+            cap_id: "greentic.cap.events.provider.v1",
+            priority: CapabilityPriority::Required,
+        });
+    }
+    if has_secrets {
+        out.push(CapabilityExpectation {
+            cap_id: "greentic.cap.secrets.store.v1",
+            priority: CapabilityPriority::Required,
+        });
+    }
+    if has_messaging || has_events {
+        out.push(CapabilityExpectation {
+            cap_id: "greentic.cap.oauth.broker.v1",
+            priority: CapabilityPriority::Recommended,
+        });
+        out.push(CapabilityExpectation {
+            cap_id: "greentic.cap.mcp.exec.v1",
+            priority: CapabilityPriority::Recommended,
+        });
+    }
+
+    out
+}
+
+fn log_capability_bootstrap_report(
+    runner_host: &DemoRunnerHost,
+    ctx: &OperatorContext,
+    domains: &[Domain],
+) {
+    let scope = ResolveScope {
+        env: std::env::var("GREENTIC_ENV").ok(),
+        tenant: Some(ctx.tenant.clone()),
+        team: ctx.team.clone(),
+    };
+    let expectations = capability_expectations_for_domains(domains);
+    let mut missing_required = Vec::new();
+    let mut missing_recommended = Vec::new();
+    for item in &expectations {
+        let resolved = runner_host.resolve_capability(item.cap_id, None, scope.clone());
+        if resolved.is_none() {
+            match item.priority {
+                CapabilityPriority::Required => missing_required.push(item.cap_id.to_string()),
+                CapabilityPriority::Recommended => {
+                    missing_recommended.push(item.cap_id.to_string())
+                }
+            }
+        }
+    }
+
+    let pending_setup = runner_host.capability_setup_plan(ctx);
+    if pending_setup.is_empty() {
+        operator_log::info(
+            module_path!(),
+            "capability setup plan: no capabilities requiring setup found",
+        );
+    } else {
+        let ids = pending_setup
+            .iter()
+            .map(|binding| format!("{}@{}", binding.cap_id, binding.stable_id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        operator_log::info(
+            module_path!(),
+            format!(
+                "capability setup plan pending={} [{}]",
+                pending_setup.len(),
+                ids
+            ),
+        );
+    }
+
+    if !missing_required.is_empty() {
+        let joined = missing_required.join(", ");
+        operator_log::warn(
+            module_path!(),
+            format!("missing required capabilities for setup/start: {joined}"),
+        );
+        eprintln!(
+            "{}",
+            operator_i18n::trf(
+                "cli.capability.bootstrap.missing_required",
+                "Warning: missing required capabilities: {}",
+                &[&joined]
+            )
+        );
+    }
+    if !missing_recommended.is_empty() {
+        let joined = missing_recommended.join(", ");
+        operator_log::warn(
+            module_path!(),
+            format!("missing recommended capabilities for setup/start: {joined}"),
+        );
+        eprintln!(
+            "{}",
+            operator_i18n::trf(
+                "cli.capability.bootstrap.missing_recommended",
+                "Note: missing recommended capabilities: {}",
+                &[&joined]
+            )
+        );
+    }
+}
+
 impl DemoPolicyArgs {
     fn run(self, policy: Policy) -> anyhow::Result<()> {
         let effective_team = if let Some(team) = self.team.clone() {
@@ -2530,6 +2833,80 @@ impl DemoPolicyArgs {
     }
 }
 
+impl DemoSetupWizardArgs {
+    fn run(self) -> anyhow::Result<()> {
+        let meta = domains::read_pack_meta(&self.pack)
+            .with_context(|| format!("failed to read pack {}", self.pack.display()))?;
+        let provider_id = self.provider.unwrap_or(meta.pack_id);
+        let setup_flow = self.flow.unwrap_or_else(|| "setup_default".to_string());
+
+        // 1. Collect answers via card wizard
+        let answers = qa_setup_wizard::run_interactive_card_wizard(&self.pack, &provider_id)?;
+
+        // 2. Build input payload with collected answers
+        let input = json!({
+            "tenant": &self.tenant,
+            "team": self.team.as_deref().unwrap_or("default"),
+            "id": &provider_id,
+            "setup_answers": &answers,
+            "config": { "id": &provider_id },
+            "msg": {
+                "id": format!("{provider_id}.setup"),
+                "tenant": { "env": "dev", "tenant": &self.tenant },
+                "channel": "setup",
+                "session_id": "setup",
+            },
+            "payload": {},
+        });
+
+        println!("\nRunning flow '{setup_flow}' with collected answers...");
+
+        // 3. Resolve secrets manager
+        let secrets_manager = if let Some(bundle) = &self.bundle {
+            secrets_gate::resolve_secrets_manager(bundle, &self.tenant, self.team.as_deref())?
+                .runtime_manager(Some(&provider_id))
+        } else {
+            default_manager()?
+        };
+
+        // 4. Run the setup flow via DemoRunner
+        let mut runner = DemoRunner::with_entry_flow(
+            self.pack.clone(),
+            &self.tenant,
+            self.team.clone(),
+            setup_flow.clone(),
+            provider_id.clone(),
+            input,
+            secrets_manager,
+        )?;
+
+        match runner.run_until_blocked() {
+            demo::DemoBlockedOn::Finished(output) => {
+                println!("\nFlow '{setup_flow}' completed:");
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "<invalid>".into())
+                );
+            }
+            demo::DemoBlockedOn::Waiting { reason, output, .. } => {
+                println!(
+                    "\nFlow '{setup_flow}' is waiting for input: {}",
+                    reason.as_deref().unwrap_or("unknown")
+                );
+                println!(
+                    "Output so far: {}",
+                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "<invalid>".into())
+                );
+            }
+            demo::DemoBlockedOn::Error(err) => {
+                return Err(err.context(format!("flow '{setup_flow}' failed")));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 impl DemoWizardArgs {
     fn run(self) -> anyhow::Result<()> {
         let mode: wizard::WizardMode = self.mode.into();
@@ -2549,6 +2926,7 @@ impl DemoWizardArgs {
             }),
             Some(provider_registry_ref.as_str()),
             self.offline,
+            self.provider_registry_refresh,
             &qa_catalog_bundle_hint,
         )?;
         let qa_catalog_entries = {
@@ -2595,6 +2973,7 @@ impl DemoWizardArgs {
             }),
             Some(provider_registry_ref.as_str()),
             self.offline,
+            self.provider_registry_refresh,
             &bundle,
         )?;
 
@@ -2627,6 +3006,9 @@ impl DemoWizardArgs {
             .collect::<std::collections::BTreeMap<_, _>>();
         let mut refs = normalize_pack_refs(&answers.pack_refs);
         refs.extend(self.pack_refs.clone());
+        refs.extend(normalize_custom_provider_refs(
+            &answers.custom_provider_refs,
+        ));
         let provider_ids = normalize_provider_ids(&answers.providers);
         for provider_id in &provider_ids {
             if let Some(item) = by_id.get(provider_id) {
@@ -3489,6 +3871,10 @@ fn localized_list_field_title(question_id: &str, field_id: &str, fallback: &str)
             "cli.qa.pack_ref_field_title",
             "Pack reference (e.g. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
         ),
+        ("custom_provider_refs", "pack_ref") => operator_i18n::tr(
+            "cli.qa.pack_ref_field_title",
+            "Pack reference (e.g. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+        ),
         ("pack_refs", "access_scope") => operator_i18n::tr(
             "cli.qa.pack_ref.access_scope_title",
             "Who can access this application?",
@@ -3564,6 +3950,13 @@ fn custom_list_add_prompt(question_id: &str) -> Option<(String, bool)> {
                 "Do you want to add providers (e.g. messaging, events, etc)? [Y,n]",
             ),
             true,
+        )),
+        "custom_provider_refs" => Some((
+            operator_i18n::tr(
+                "cli.qa.custom_provider_refs.add_prompt",
+                "Do you want to add a non-well-known provider by pack reference? [y,N]",
+            ),
+            false,
         )),
         _ => None,
     }
@@ -3915,6 +4308,17 @@ fn normalize_provider_ids(values: &[WizardProviderAnswer]) -> Vec<String> {
                 .or_else(|| id.clone())
                 .filter(|value| !value.trim().is_empty()),
         })
+        .collect()
+}
+
+fn normalize_custom_provider_refs(values: &[WizardCustomProviderRefAnswer]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| match value {
+            WizardCustomProviderRefAnswer::Ref(raw) => raw.clone(),
+            WizardCustomProviderRefAnswer::Item { pack_ref } => pack_ref.clone(),
+        })
+        .filter(|value| !value.trim().is_empty())
         .collect()
 }
 
@@ -4423,16 +4827,11 @@ impl DemoSendArgs {
             .ok_or_else(|| anyhow::anyhow!("encode output missing payload"))?;
         let send_input = egress::build_send_payload(
             payload,
+            provider_type.clone(),
             self.tenant.clone(),
             team.map(|value| value.to_string()),
         );
-        let mut send_value = serde_json::to_value(&send_input)?;
-        if let Some(map) = send_value.as_object_mut() {
-            map.insert(
-                "provider_type".to_string(),
-                JsonValue::String(provider_type.clone()),
-            );
-        }
+        let send_value = serde_json::to_value(&send_input)?;
         let send_outcome = run_provider_component_op(
             &runner_host,
             &pack,
@@ -5312,6 +5711,7 @@ fn restart_name(target: &RestartTarget) -> String {
     match target {
         RestartTarget::All => "all",
         RestartTarget::Cloudflared => "cloudflared",
+        RestartTarget::Ngrok => "ngrok",
         RestartTarget::Nats => "nats",
         RestartTarget::Gateway => "gateway",
         RestartTarget::Egress => "egress",
@@ -6226,15 +6626,17 @@ fn run_plan_item(
         }
     }
 
-    let setup_values = if action == DomainAction::Setup {
-        Some(collect_setup_answers(
+    let (setup_values, qa_form_spec) = if action == DomainAction::Setup {
+        let (answers, form_spec) = qa_setup_wizard::run_qa_setup(
             &item.pack.path,
             &item.pack.pack_id,
             setup_answers,
             interactive,
-        )?)
+            None, // no pre-built FormSpec; will try setup.yaml fallback
+        )?;
+        (Some(answers), form_spec)
     } else {
-        None
+        (None, None)
     };
     let providers_root = state_root
         .join("state")
@@ -6312,6 +6714,28 @@ fn run_plan_item(
     } else {
         None
     };
+
+    // Persist secrets and config from QA results when FormSpec is available
+    if let Some(ref config) = qa_config_override
+        && let Some(ref form_spec) = qa_form_spec
+        && action == DomainAction::Setup
+        && let Err(err) = crate::qa_persist::persist_qa_config(
+            &providers_root,
+            &provider_id,
+            config,
+            &item.pack.path,
+            form_spec,
+            backup,
+        )
+    {
+        operator_log::warn(
+            module_path!(),
+            format!(
+                "failed to persist qa config provider={}: {err}",
+                provider_id
+            ),
+        );
+    }
 
     let public_base_url_ref = public_base_url.as_deref().map(|value| value.as_str());
     let mut input = build_input_payload(
@@ -6716,6 +7140,7 @@ fn read_public_base_url(root: &Path, tenant: &str, team: Option<&str>) -> Option
     let path = crate::cloudflared::public_url_path(&paths);
     let contents = std::fs::read_to_string(path).ok()?;
     crate::cloudflared::parse_public_url(&contents)
+        .or_else(|| crate::ngrok::parse_public_url(&contents))
 }
 
 fn parse_kv(input: &str) -> anyhow::Result<(String, JsonValue)> {
@@ -7208,5 +7633,24 @@ mod tests {
         let value = localized_list_field_title("pack_refs", "pack_ref", "fallback");
         assert!(!value.is_empty());
         assert_ne!(value, "fallback");
+    }
+
+    #[test]
+    fn normalize_custom_provider_refs_collects_non_empty_values() {
+        let values = vec![
+            WizardCustomProviderRefAnswer::Ref("".to_string()),
+            WizardCustomProviderRefAnswer::Ref("oci://ghcr.io/acme/providers/custom:1".to_string()),
+            WizardCustomProviderRefAnswer::Item {
+                pack_ref: "repo://messaging/providers/custom@latest".to_string(),
+            },
+        ];
+        let refs = normalize_custom_provider_refs(&values);
+        assert_eq!(
+            refs,
+            vec![
+                "oci://ghcr.io/acme/providers/custom:1".to_string(),
+                "repo://messaging/providers/custom@latest".to_string()
+            ]
+        );
     }
 }

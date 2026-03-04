@@ -32,6 +32,7 @@ mod suite {
             content_type: "application/json".to_string(),
             body_b64: STANDARD.encode(b"{}"),
             metadata_json: Some(json!({"foo": "bar"}).to_string()),
+            metadata: None,
         };
         let round_trip = serde_json::to_string(&payload).unwrap();
         let parsed: ProviderPayloadV1 = serde_json::from_str(&round_trip).unwrap();

@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "¿Kuna team id ukas aka aplicación ukar mantaspa?",
   "cli.qa.pack_ref.tenant_id_title": "¿Kuna tenant id ukas aka aplicación ukar mantaspa?",
   "cli.qa.pack_ref_field_title": "Pack referencia (ukhamjama /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "¿Mä aplicación pack yapxatañ munta? [Y,n]",
   "cli.qa.providers.add_prompt": "¿Providers yapxatañ munta (sañäni messaging, events, etc)? [Y,n]",
   "cli.qa.select_number_or_value": "Jakhüwi jan ukax valor ajlliña:",

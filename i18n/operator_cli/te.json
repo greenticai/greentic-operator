@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "ఈ అప్లికేషన్‌ను యాక్సెస్ చేయగల జట్టు id ఏమిటి?",
   "cli.qa.pack_ref.tenant_id_title": "ఈ అప్లికేషన్‌ను యాక్సెస్ చేయగల టెనెంట్ id ఏమిటి?",
   "cli.qa.pack_ref_field_title": "ప్యాక్ రిఫరెన్స్ (ఉదా. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "మీరు అప్లికేషన్ ప్యాక్‌ను జోడించాలనుకుంటున్నారా? [Y,n]",
   "cli.qa.providers.add_prompt": "మీరు ప్రొవైడర్లు (ఉదా. మెసేజింగ్, ఈవెంట్స్, మొదలైనవి) జోడించాలనుకుంటున్నారా? [Y,n]",
   "cli.qa.select_number_or_value": "సంఖ్య లేదా విలువను ఎంచుకోండి:",

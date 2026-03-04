@@ -18,7 +18,7 @@ use greentic_runner_host::{
         WebhookPolicy,
     },
     pack::{ComponentResolution, PackRuntime},
-    storage::{DynSessionStore, new_state_store},
+    storage::{DynSessionStore, DynStateStore, new_state_store},
     trace::TraceConfig,
     validate::ValidationConfig,
 };
@@ -28,6 +28,30 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use tokio::runtime::Runtime as TokioRuntime;
 use zip::ZipArchive;
+
+/// Create a Tokio runtime for blocking async operations.
+/// When called from within an existing runtime (e.g., HTTP ingress handler),
+/// spawns a dedicated thread to avoid "Cannot start a runtime from within a
+/// runtime" panics.
+fn make_runtime_or_thread_scope<F, T>(f: F) -> T
+where
+    F: FnOnce(&TokioRuntime) -> T + Send,
+    T: Send,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let rt = TokioRuntime::new().expect("failed to create tokio runtime");
+                f(&rt)
+            })
+            .join()
+            .expect("provider invocation thread panicked")
+        })
+    } else {
+        let rt = TokioRuntime::new().expect("failed to create tokio runtime");
+        f(&rt)
+    }
+}
 
 use crate::runner_exec;
 use crate::runner_integration;
@@ -43,7 +67,7 @@ use crate::cards::CardRenderer;
 use crate::discovery;
 use crate::domains::{self, Domain, ProviderPack};
 use crate::operator_log;
-use crate::secrets_gate::{DynSecretsManager, SecretsManagerHandle};
+use crate::secrets_gate::{self, DynSecretsManager, SecretsManagerHandle};
 use crate::secrets_manager;
 use crate::state_layout;
 
@@ -154,6 +178,7 @@ pub struct DemoRunnerHost {
     capability_registry: CapabilityRegistry,
     secrets_handle: SecretsManagerHandle,
     card_renderer: CardRenderer,
+    state_store: DynStateStore,
     debug_enabled: bool,
 }
 
@@ -230,12 +255,24 @@ impl DemoRunnerHost {
             capability_registry,
             secrets_handle,
             card_renderer: CardRenderer::new(),
+            state_store: new_state_store(),
             debug_enabled,
         })
     }
 
     pub fn debug_enabled(&self) -> bool {
         self.debug_enabled
+    }
+
+    /// Return the canonical `provider_type` stored inside a provider pack manifest
+    /// (e.g. `"messaging.webex.bot"`).  Falls back to the lookup key when the pack
+    /// is not found or the manifest cannot be read.
+    pub fn canonical_provider_type(&self, domain: Domain, lookup_key: &str) -> String {
+        if let Some(pack) = self.catalog.get(&(domain, lookup_key.to_string())) {
+            primary_provider_type(&pack.path).unwrap_or_else(|_| lookup_key.to_string())
+        } else {
+            lookup_key.to_string()
+        }
     }
 
     pub fn resolve_capability(
@@ -731,13 +768,19 @@ impl DemoRunnerHost {
         payload_bytes: &[u8],
         ctx: &OperatorContext,
     ) -> anyhow::Result<FlowOutcome> {
-        let runtime = TokioRuntime::new()
-            .context("failed to create tokio runtime for provider invocation")?;
         let payload = payload_bytes.to_vec();
-        let result = runtime.block_on(async {
+        let result = make_runtime_or_thread_scope(|runtime| {
+            runtime.block_on(async {
             let host_config = Arc::new(build_demo_host_config(&ctx.tenant));
-            let dev_store_display = self
-                .secrets_handle
+            // Re-open the dev store on each invocation so newly-written secrets
+            // (e.g. from QA wizard submit) are visible without restarting the demo.
+            let fresh_secrets = secrets_gate::resolve_secrets_manager(
+                &self.bundle_root,
+                &ctx.tenant,
+                ctx.team.as_deref(),
+            )
+            .unwrap_or_else(|_| self.secrets_handle.clone());
+            let dev_store_display = fresh_secrets
                 .dev_store_path
                 .as_ref()
                 .map(|path| path.display().to_string())
@@ -746,14 +789,14 @@ impl DemoRunnerHost {
                 module_path!(),
                 format!(
                     "secrets backend for wasm: using_env_fallback={} dev_store={}",
-                    self.secrets_handle.using_env_fallback, dev_store_display,
+                    fresh_secrets.using_env_fallback, dev_store_display,
                 ),
             );
             operator_log::info(
                 module_path!(),
                 format!(
                     "exec secrets: dev_store={} env_fallback={}",
-                    dev_store_display, self.secrets_handle.using_env_fallback,
+                    dev_store_display, fresh_secrets.using_env_fallback,
                 ),
             );
             let pack_runtime = PackRuntime::load(
@@ -762,9 +805,9 @@ impl DemoRunnerHost {
                 None,
                 Some(&pack.path),
                 None::<DynSessionStore>,
-                Some(new_state_store()),
+                Some(self.state_store.clone()),
                 Arc::new(RunnerWasiPolicy::default()),
-                self.secrets_handle.runtime_manager(Some(&pack.pack_id)),
+                fresh_secrets.runtime_manager(Some(&pack.pack_id)),
                 None,
                 false,
                 ComponentResolution::default(),
@@ -810,6 +853,7 @@ impl DemoRunnerHost {
             pack_runtime
                 .invoke_provider(&binding, exec_ctx, op_id, payload)
                 .await
+        })
         });
 
         match result {

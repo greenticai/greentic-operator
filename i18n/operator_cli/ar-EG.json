@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "ما هو معرف الفريق الذي يمكنه الوصول إلى هذا التطبيق؟",
   "cli.qa.pack_ref.tenant_id_title": "ما هو معرف المستأجر الذي يمكنه الوصول إلى هذا التطبيق؟",
   "cli.qa.pack_ref_field_title": "مرجع الحزمة (مثال: /path/to/app.gtpack، file://...، oci://ghcr.io/...، repo://...، store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "هل تريد إضافة حزمة تطبيق؟ [Y,n]",
   "cli.qa.providers.add_prompt": "هل تريد إضافة مزوّدين (مثل المراسلة، الأحداث، إلخ)؟ [Y,n]",
   "cli.qa.select_number_or_value": "اختر رقمًا أو قيمة:",

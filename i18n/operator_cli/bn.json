@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "এই অ্যাপ্লিকেশনে অ্যাক্সেস পাবে এমন টিম আইডি কী?",
   "cli.qa.pack_ref.tenant_id_title": "এই অ্যাপ্লিকেশনে অ্যাক্সেস পাবে এমন টেন্যান্ট আইডি কী?",
   "cli.qa.pack_ref_field_title": "প্যাক রেফারেন্স (যেমন /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "আপনি কি একটি অ্যাপ্লিকেশন প্যাক যোগ করতে চান? [Y,n]",
   "cli.qa.providers.add_prompt": "আপনি কি প্রোভাইডার (যেমন messaging, events, ইত্যাদি) যোগ করতে চান? [Y,n]",
   "cli.qa.select_number_or_value": "সংখ্যা বা মান নির্বাচন করুন:",

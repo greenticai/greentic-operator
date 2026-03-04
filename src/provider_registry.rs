@@ -15,6 +15,7 @@ pub fn resolve_catalog_path(
     catalog_file: Option<PathBuf>,
     provider_registry_ref: Option<&str>,
     offline: bool,
+    refresh: bool,
     bundle: &Path,
 ) -> anyhow::Result<Option<PathBuf>> {
     if let Some(path) = catalog_file {
@@ -38,10 +39,30 @@ pub fn resolve_catalog_path(
     }
 
     let cached = cache_path_for_ref(bundle, reference);
+    let cached_by_digest = resolve_cached_by_digest(bundle, reference)?;
+    if !offline && refresh {
+        match fetch_remote_registry_to_cache(bundle, reference) {
+            Ok(path) => return Ok(Some(path)),
+            Err(err) => {
+                if cached.exists() {
+                    return Ok(Some(cached));
+                }
+                if let Some(by_digest) = cached_by_digest {
+                    return Ok(Some(by_digest));
+                }
+                return Err(anyhow!(
+                    "provider registry {} unavailable and no cached copy found at {} (cause: {}). Use --provider-registry file://<path> or local path.",
+                    reference,
+                    cache_path_for_ref(bundle, reference).display(),
+                    err
+                ));
+            }
+        }
+    }
     if cached.exists() {
         return Ok(Some(cached));
     }
-    if let Some(by_digest) = resolve_cached_by_digest(bundle, reference)? {
+    if let Some(by_digest) = cached_by_digest {
         return Ok(Some(by_digest));
     }
 
@@ -133,6 +154,27 @@ fn resolve_cached_by_digest(bundle: &Path, reference: &str) -> anyhow::Result<Op
     Ok(None)
 }
 
+fn cached_digest_for_reference(bundle: &Path, reference: &str) -> anyhow::Result<Option<String>> {
+    let index = load_cache_index(bundle)?;
+    Ok(index.refs.get(reference).cloned())
+}
+
+fn resolve_existing_cache_for_digest(
+    bundle: &Path,
+    reference: &str,
+    digest: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let by_digest = cache_path_for_digest(bundle, digest);
+    if by_digest.exists() {
+        return Ok(Some(by_digest));
+    }
+    let by_ref = cache_path_for_ref(bundle, reference);
+    if by_ref.exists() {
+        return Ok(Some(by_ref));
+    }
+    Ok(None)
+}
+
 fn fetch_remote_registry_to_cache(bundle: &Path, reference: &str) -> anyhow::Result<PathBuf> {
     use greentic_distributor_client::{
         OciPackFetcher, PackFetchOptions, oci_packs::DefaultRegistryClient,
@@ -149,19 +191,34 @@ fn fetch_remote_registry_to_cache(bundle: &Path, reference: &str) -> anyhow::Res
         offline: false,
         ..PackFetchOptions::default()
     });
+    let prior_digest = cached_digest_for_reference(bundle, reference)?;
     match rt.block_on(fetcher.fetch_pack_to_cache(&mapped)) {
-        Ok(fetched) => cache_remote_registry_file(
-            bundle,
-            reference,
-            fetched.resolved_digest.as_str(),
-            std::fs::read(&fetched.path)
-                .with_context(|| format!("read fetched registry {}", fetched.path.display()))?,
-        ),
+        Ok(fetched) => {
+            if prior_digest.as_deref() == Some(fetched.resolved_digest.as_str())
+                && let Some(existing) =
+                    resolve_existing_cache_for_digest(bundle, reference, &fetched.resolved_digest)?
+            {
+                return Ok(existing);
+            }
+            cache_remote_registry_file(
+                bundle,
+                reference,
+                fetched.resolved_digest.as_str(),
+                std::fs::read(&fetched.path)
+                    .with_context(|| format!("read fetched registry {}", fetched.path.display()))?,
+            )
+        }
         Err(primary_err) => {
             let (bytes, digest) = rt
                 .block_on(fetch_registry_bytes_via_oci(&mapped))
                 .with_context(|| format!("fetch provider registry {reference}"))
                 .with_context(|| format!("primary fetch error: {primary_err}"))?;
+            if prior_digest.as_deref() == Some(digest.as_str())
+                && let Some(existing) =
+                    resolve_existing_cache_for_digest(bundle, reference, digest.as_str())?
+            {
+                return Ok(existing);
+            }
             cache_remote_registry_file(bundle, reference, &digest, bytes)
         }
     }
@@ -172,13 +229,47 @@ fn map_remote_registry_ref(reference: &str) -> anyhow::Result<String> {
     if let Some(rest) = trimmed.strip_prefix("oci://") {
         return Ok(rest.to_string());
     }
+    if let Some(rest) = trimmed.strip_prefix("repo://") {
+        return map_registry_target(rest, std::env::var("GREENTIC_REPO_REGISTRY_BASE").ok())
+            .ok_or_else(|| {
+                anyhow!(
+                    "repo:// reference {trimmed} requires GREENTIC_REPO_REGISTRY_BASE to map to OCI"
+                )
+            });
+    }
+    if let Some(rest) = trimmed.strip_prefix("store://") {
+        return map_registry_target(rest, std::env::var("GREENTIC_STORE_REGISTRY_BASE").ok())
+            .ok_or_else(|| {
+                anyhow!(
+                    "store:// reference {trimmed} requires GREENTIC_STORE_REGISTRY_BASE to map to OCI"
+                )
+            });
+    }
     if trimmed.contains("://") {
         return Err(anyhow!(
-            "unsupported provider registry scheme for {}; expected oci://, file://, or local path",
+            "unsupported provider registry scheme for {}; expected oci://, repo://, store://, file://, or local path",
             reference
         ));
     }
     Ok(trimmed.to_string())
+}
+
+fn map_registry_target(target: &str, base: Option<String>) -> Option<String> {
+    if looks_like_explicit_oci_ref(target) {
+        return Some(target.to_string());
+    }
+    let base = base?;
+    let normalized_base = base.trim_end_matches('/');
+    let normalized_target = target.trim_start_matches('/');
+    Some(format!("{normalized_base}/{normalized_target}"))
+}
+
+fn looks_like_explicit_oci_ref(target: &str) -> bool {
+    if !(target.contains('/') && (target.contains('@') || target.contains(':'))) {
+        return false;
+    }
+    let registry = target.split('/').next().unwrap_or_default();
+    registry.contains('.') || registry.contains(':') || registry == "localhost"
 }
 
 fn cache_remote_registry_file(
@@ -306,6 +397,7 @@ mod tests {
             None,
             Some(&format!("file://{}", catalog.display())),
             false,
+            false,
             &bundle,
         )
         .unwrap()
@@ -324,7 +416,7 @@ mod tests {
         let cached = cache_registry_file(&bundle, reference, &source).unwrap();
         assert!(cached.exists());
 
-        let resolved = resolve_catalog_path(None, Some(reference), true, &bundle)
+        let resolved = resolve_catalog_path(None, Some(reference), true, false, &bundle)
             .unwrap()
             .unwrap();
         assert_eq!(resolved, cached);
@@ -350,10 +442,31 @@ mod tests {
             None,
             Some("oci://ghcr.io/greenticai/registries/providers:latest"),
             true,
+            false,
             &bundle,
         )
         .unwrap()
         .unwrap();
         assert_eq!(resolved, digest_path);
+    }
+
+    #[test]
+    fn map_remote_registry_ref_supports_repo_and_store_via_env_base() {
+        unsafe {
+            std::env::set_var("GREENTIC_REPO_REGISTRY_BASE", "ghcr.io/org");
+            std::env::set_var("GREENTIC_STORE_REGISTRY_BASE", "ghcr.io/store");
+        }
+        assert_eq!(
+            map_remote_registry_ref("repo://providers/catalog@latest").unwrap(),
+            "ghcr.io/org/providers/catalog@latest"
+        );
+        assert_eq!(
+            map_remote_registry_ref("store://providers/catalog:latest").unwrap(),
+            "ghcr.io/store/providers/catalog:latest"
+        );
+        unsafe {
+            std::env::remove_var("GREENTIC_REPO_REGISTRY_BASE");
+            std::env::remove_var("GREENTIC_STORE_REGISTRY_BASE");
+        }
     }
 }

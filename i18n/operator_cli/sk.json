@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "Aké je ID tímu, ktorý má prístup k tejto aplikácii?",
   "cli.qa.pack_ref.tenant_id_title": "Aké je ID nájomcu, ktorý má prístup k tejto aplikácii?",
   "cli.qa.pack_ref_field_title": "Referencia balíka (napr. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "Chcete pridať aplikačný balík? [Y,n]",
   "cli.qa.providers.add_prompt": "Chcete pridať poskytovateľov (napr. messaging, events atď.)? [Y,n]",
   "cli.qa.select_number_or_value": "Vyberte číslo alebo hodnotu:",

@@ -78,8 +78,8 @@ pub fn load_app_pack_info(pack_path: &Path) -> Result<AppPackInfo> {
     let mut buf = Vec::new();
     manifest.read_to_end(&mut buf)?;
     let value: CborValue = serde_cbor::from_slice(&buf)?;
-    let pack_id = extract_text_key(&value, "pack_id")
-        .ok_or_else(|| anyhow::anyhow!("manifest missing pack_id in {pack_path:?}"))?;
+    let pack_id = extract_text_or_symbol(&value, "pack_id", "pack_ids")
+        .ok_or_else(|| anyhow::anyhow!("pack manifest missing pack id in {pack_path:?}"))?;
     let flows = extract_flows(&value);
     Ok(AppPackInfo { pack_id, flows })
 }
@@ -131,19 +131,42 @@ pub fn run_app_flow(
     };
 
     let output = runner_exec::run_provider_pack_flow(request)?;
-    let value = collect_transcript_outputs(&output.run_dir)?
+    // Check if the envelope contains AC action routing metadata (routeToCardId/toCardId).
+    // If so, select the matching card node output from the transcript instead of the default.
+    let target_node = envelope
+        .metadata
+        .get("routeToCardId")
+        .or_else(|| envelope.metadata.get("toCardId"));
+    let value = collect_transcript_outputs(&output.run_dir, target_node.map(|s| s.as_str()))?
         .ok_or_else(|| anyhow::anyhow!("app flow produced no outputs"))?;
-    parse_envelopes(&value)
+    parse_envelopes(&value, envelope)
 }
 
-fn extract_text_key(value: &CborValue, key: &str) -> Option<String> {
-    if let CborValue::Map(map) = value {
-        let key = CborValue::Text(key.to_string());
-        if let Some(CborValue::Text(text)) = map.get(&key) {
-            return Some(text.clone());
+/// Extract a text field that may be stored as a symbol index (integer)
+/// referencing the symbols table in the manifest.
+fn extract_text_or_symbol(value: &CborValue, key: &str, symbol_table: &str) -> Option<String> {
+    let map = match value {
+        CborValue::Map(map) => map,
+        _ => return None,
+    };
+    let cbor_key = CborValue::Text(key.to_string());
+    match map.get(&cbor_key)? {
+        CborValue::Text(text) => Some(text.clone()),
+        CborValue::Integer(idx) => {
+            let idx = *idx as usize;
+            let symbols_key = CborValue::Text("symbols".to_string());
+            let table_key = CborValue::Text(symbol_table.to_string());
+            let symbols = map.get(&symbols_key)?;
+            if let CborValue::Map(sym_map) = symbols
+                && let Some(CborValue::Array(entries)) = sym_map.get(&table_key)
+                && let Some(CborValue::Text(resolved)) = entries.get(idx)
+            {
+                return Some(resolved.clone());
+            }
+            None
         }
+        _ => None,
     }
-    None
 }
 
 fn extract_flows(value: &CborValue) -> Vec<AppFlowInfo> {
@@ -189,25 +212,42 @@ fn extract_text_from_map(map: &BTreeMap<CborValue, CborValue>, key: &str) -> Opt
         })
 }
 
-fn collect_transcript_outputs(run_dir: &Path) -> Result<Option<JsonValue>> {
+fn collect_transcript_outputs(
+    run_dir: &Path,
+    target_node_id: Option<&str>,
+) -> Result<Option<JsonValue>> {
     let path = run_dir.join("transcript.jsonl");
     if !path.exists() {
         return Ok(None);
     }
     let contents = std::fs::read_to_string(path)?;
-    let mut last = None;
+    let mut first = None;
+    let mut targeted = None;
     for line in contents.lines() {
         if let Ok(value) = serde_json::from_str::<JsonValue>(line)
             && let Some(outputs) = value.get("outputs")
             && !outputs.is_null()
         {
-            last = Some(outputs.clone());
+            if first.is_none() {
+                first = Some(outputs.clone());
+            }
+            // If targeting a specific card node, check node_id match.
+            if let Some(target) = target_node_id
+                && let Some(node_id) = value.get("node_id").and_then(|n| n.as_str())
+                && node_id == target
+            {
+                targeted = Some(outputs.clone());
+            }
         }
     }
-    Ok(last)
+    // Targeted node takes priority; otherwise return first card (not last).
+    Ok(targeted.or(first))
 }
 
-fn parse_envelopes(value: &JsonValue) -> Result<Vec<ChannelMessageEnvelope>> {
+fn parse_envelopes(
+    value: &JsonValue,
+    ingress_envelope: &ChannelMessageEnvelope,
+) -> Result<Vec<ChannelMessageEnvelope>> {
     if let Some(v) = value.as_array() {
         return parse_envelope_array(v);
     }
@@ -218,6 +258,40 @@ fn parse_envelopes(value: &JsonValue) -> Result<Vec<ChannelMessageEnvelope>> {
         let envelope: ChannelMessageEnvelope = serde_json::from_value(envelope.clone())
             .context("app flow message payload is not a ChannelMessageEnvelope")?;
         return Ok(vec![envelope]);
+    }
+    // Handle component-adaptive-card output: AdaptiveCardResult with renderedCard.
+    // Store the rendered AC JSON in metadata["adaptive_card"] (matches Teams/Slack pattern).
+    if let Some(rendered_card) = value.get("renderedCard")
+        && !rendered_card.is_null()
+    {
+        let mut reply = ingress_envelope.clone();
+        // Extract a brief title from the first body element for text fallback.
+        let title = rendered_card
+            .get("body")
+            .and_then(|b| b.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|e| e.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("Adaptive Card");
+        reply.text = Some(title.to_string());
+        if let Ok(ac_json) = serde_json::to_string(rendered_card) {
+            reply.metadata.insert("adaptive_card".to_string(), ac_json);
+        }
+        return Ok(vec![reply]);
+    }
+
+    // Fallback: wrap simple text output in a reply envelope based on the ingress message.
+    // Check payload.text (runner transcript format) then text then raw string.
+    if let Some(text) = value
+        .get("payload")
+        .and_then(|p| p.get("text"))
+        .and_then(JsonValue::as_str)
+        .or_else(|| value.get("text").and_then(JsonValue::as_str))
+        .or_else(|| value.as_str())
+    {
+        let mut reply = ingress_envelope.clone();
+        reply.text = Some(text.to_string());
+        return Ok(vec![reply]);
     }
     Err(anyhow::anyhow!(
         "app flow output did not produce envelope(s)"
@@ -283,6 +357,43 @@ mod tests {
         };
         let flow = select_app_flow(&info).unwrap();
         assert_eq!(flow.id, "default");
+    }
+
+    fn test_envelope() -> ChannelMessageEnvelope {
+        serde_json::from_value(json!({
+            "id": "test-1",
+            "tenant": {"env": "dev", "tenant": "t", "tenant_id": "t", "attempt": 0},
+            "channel": "telegram",
+            "session_id": "s1",
+            "text": "hello"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn parse_envelopes_payload_text_fallback() {
+        let ingress = test_envelope();
+        // Runner transcript format: {"payload": {"text": "..."}, "control": {...}}
+        let output = json!({
+            "control": {"routing": "out"},
+            "payload": {"text": "Echo: received your message"},
+            "state_updates": {}
+        });
+        let result = parse_envelopes(&output, &ingress).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].text.as_deref(),
+            Some("Echo: received your message")
+        );
+    }
+
+    #[test]
+    fn parse_envelopes_direct_text_fallback() {
+        let ingress = test_envelope();
+        let output = json!({"text": "simple reply"});
+        let result = parse_envelopes(&output, &ingress).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text.as_deref(), Some("simple reply"));
     }
 
     #[test]

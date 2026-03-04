@@ -95,10 +95,30 @@
   - **Role:** Process supervisor foundation.
   - **Key functionality:** Spawns services with pid/log capture, writes resolved command JSON, checks running status, and stops services.
   - **Key dependencies / integration points:** Uses `sysinfo` for process checks and `runtime_state` for layout.
+- **Path:** `src/setup_to_formspec.rs`
+  - **Role:** Legacy setup.yaml to FormSpec converter.
+  - **Key functionality:** Converts a `SetupSpec` (from a pack's `assets/setup.yaml`) into a `qa_spec::FormSpec`. Maps question types (boolean, number, choice, string), infers secret flags and URL constraints from naming conventions (e.g. `_token` suffix, `_url` suffix), and preserves choices, defaults, and descriptions.
+  - **Key dependencies / integration points:** Uses `qa_spec::FormSpec`, `setup_input::SetupSpec`, and `setup_input::load_setup_spec`.
+- **Path:** `src/qa_setup_wizard.rs`
+  - **Role:** Unified FormSpec-driven setup wizard.
+  - **Key functionality:** Replaces the legacy `collect_setup_answers()` call. Accepts a pre-built `FormSpec` or falls back to `setup_to_formspec::pack_to_form_spec`. In interactive mode, prompts for each question with type hints, secret masking (via `rpassword`), constraint validation, and choice enumeration. In non-interactive mode, validates pre-supplied answers against the FormSpec (required fields, pattern constraints). Returns `(answers, Option<FormSpec>)`.
+  - **Key dependencies / integration points:** Uses `qa_spec`, `setup_to_formspec`, `demo::qa_bridge`, and `rpassword`.
+- **Path:** `src/qa_persist.rs`
+  - **Role:** QA config and secrets persistence.
+  - **Key functionality:** After apply-answers returns a config object: extracts secret fields (identified by `FormSpec.questions[].secret == true`) and writes them to the `DevStore` via `greentic_secrets_lib::apply_seed`; writes remaining non-secret fields to the provider config envelope. Provides `persist_qa_results()` convenience function that handles both in one call.
+  - **Key dependencies / integration points:** Uses `greentic_secrets_lib::DevStore`, `qa_spec::FormSpec`, `provider_config_envelope`, and `secrets_gate`.
+- **Path:** `src/qa_flow_handler.rs`
+  - **Role:** Operator-side handler for `qa.process` flow nodes.
+  - **Key functionality:** Intercepts flow nodes whose component type is a QA processor (`component-qa`, `ai.greentic.component-qa`, or identifiers containing `qa.process`). Runs the full QA wizard inline: determines provider from node config, loads FormSpec, collects/validates answers, calls apply-answers via `component_qa_ops`, and returns the config output as the node result. Supports setup/remove/upgrade/default modes.
+  - **Key dependencies / integration points:** Uses `component_qa_ops`, `qa_setup_wizard`, `setup_to_formspec`, and `demo::runner_host::OperatorContext`.
 - **Path:** `src/demo/`
   - **Role:** Demo bundle workflow.
   - **Key functionality:** Builds demo bundles from resolved manifests, rewrites `project_root` to `./`, copies providers/packs/tenants (optionally only used providers), runs demo up with resolved binaries or config-driven services, orchestrates provider setup via runner, supports runtime-state demo down/status/logs, and supports demo doctor checks.
   - **Key dependencies / integration points:** Uses `state/resolved` manifests and services runtime helpers.
+- **Path:** `src/demo/qa_bridge.rs`
+  - **Role:** Bridge between provider QA output and FormSpec.
+  - **Key functionality:** Converts provider WASM `qa-spec` JSON output (with i18n keys) into a `qa_spec::FormSpec`. Resolves question titles and descriptions from an i18n map, infers question types and secret flags from naming conventions, builds a `ResolvedI18nMap` for the QA engine, and normalizes boolean answers from natural language (yes/no/y/n) to true/false strings.
+  - **Key dependencies / integration points:** Uses `qa_spec::FormSpec`, `qa_spec::ResolvedI18nMap`, and provider i18n bundles.
 - **Path:** `src/services/`
   - **Role:** Local runtime orchestration.
   - **Key functionality:** Starts/stops NATS via Docker, launches greentic-messaging with explicit packs, manages pidfiles/logs, and tails logs.
@@ -139,6 +159,10 @@
   - **Role:** Provider setup smoke test.
   - **Key functionality:** Runs provider setup/verify with a fake runner and ensures output files are written.
   - **Key dependencies / integration points:** Uses `providers` and `runner_integration`.
+- **Path:** `tests/qa_e2e.rs`
+  - **Role:** QA pipeline end-to-end tests.
+  - **Key functionality:** Exercises the full FormSpec pipeline: setup.yaml to FormSpec conversion, FormSpec-based answer validation (required fields, URL constraints), secret field identification and filtering from config envelopes, `run_qa_setup` with preloaded answers, and `qa_bridge::provider_qa_to_form_spec` from WASM QA output. Contains 4 E2E tests.
+  - **Key dependencies / integration points:** Uses `setup_to_formspec`, `qa_setup_wizard`, `qa_persist`, `demo::qa_bridge`, `qa_spec`, and `zip` for test pack creation.
 - **Path:** `tests/supervisor_smoke.rs`
   - **Role:** Supervisor smoke test.
   - **Key functionality:** Spawns a fake service, verifies pid/log creation and running status, then stops the service.

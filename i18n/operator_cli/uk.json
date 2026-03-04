@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "Який id команди, що може отримати доступ до цього застосунку?",
   "cli.qa.pack_ref.tenant_id_title": "Який id орендаря, що може отримати доступ до цього застосунку?",
   "cli.qa.pack_ref_field_title": "Посилання на пак (напр. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "Бажаєте додати пак застосунку? [Y,n]",
   "cli.qa.providers.add_prompt": "Бажаєте додати провайдерів (напр. messaging, events тощо)? [Y,n]",
   "cli.qa.select_number_or_value": "Виберіть номер або значення:",

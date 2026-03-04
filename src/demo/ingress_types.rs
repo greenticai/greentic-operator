@@ -1,3 +1,4 @@
+use greentic_types::ChannelMessageEnvelope;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,4 +69,5 @@ pub struct EventEnvelopeV1 {
 pub struct IngressDispatchResult {
     pub response: IngressHttpResponse,
     pub events: Vec<EventEnvelopeV1>,
+    pub messaging_envelopes: Vec<ChannelMessageEnvelope>,
 }

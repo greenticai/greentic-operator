@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "Ki id ekip ki ka jwenn aksè a aplikasyon sa a?",
   "cli.qa.pack_ref.tenant_id_title": "Ki id tenant ki ka jwenn aksè a aplikasyon sa a?",
   "cli.qa.pack_ref_field_title": "Referans pake (eg. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "Èske ou vle ajoute yon pake aplikasyon? [Y,n]",
   "cli.qa.providers.add_prompt": "Èske ou vle ajoute providers (eg. messaging, events, etc)? [Y,n]",
   "cli.qa.select_number_or_value": "Chwazi nimewo oswa valè:",

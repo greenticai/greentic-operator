@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "Apakah id pasukan yang boleh mengakses aplikasi ini?",
   "cli.qa.pack_ref.tenant_id_title": "Apakah id tenant yang boleh mengakses aplikasi ini?",
   "cli.qa.pack_ref_field_title": "Rujukan pack (cth. /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "Adakah anda mahu menambah pack aplikasi? [Y,n]",
   "cli.qa.providers.add_prompt": "Adakah anda mahu menambah provider (cth. messaging, events, dll)? [Y,n]",
   "cli.qa.select_number_or_value": "Pilih nombor atau nilai:",

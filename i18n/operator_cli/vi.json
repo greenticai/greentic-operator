@@ -99,6 +99,7 @@
   "cli.qa.pack_ref.team_id_title": "ID team có thể truy cập ứng dụng này là gì?",
   "cli.qa.pack_ref.tenant_id_title": "ID tenant có thể truy cập ứng dụng này là gì?",
   "cli.qa.pack_ref_field_title": "Tham chiếu pack (ví dụ: /path/to/app.gtpack, file://..., oci://ghcr.io/..., repo://..., store://...)",
+  "cli.qa.custom_provider_refs.add_prompt": "Do you want to add a non-well-known provider by pack reference? [y,N]",
   "cli.qa.pack_refs.add_prompt": "Bạn có muốn thêm một pack ứng dụng không? [Y,n]",
   "cli.qa.providers.add_prompt": "Bạn có muốn thêm provider (ví dụ: messaging, events, v.v.) không? [Y,n]",
   "cli.qa.select_number_or_value": "Chọn số hoặc giá trị:",

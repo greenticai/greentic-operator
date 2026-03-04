@@ -7,6 +7,7 @@ pub enum DemoCommand {
     Json,
     Input { field: String, value: String },
     Click { action_id: String },
+    Setup { provider: Option<String> },
     Back,
     Quit,
     Help,
@@ -50,6 +51,13 @@ pub fn parse_command(line: &str) -> Result<DemoCommand, CommandParseError> {
         "back" => Ok(DemoCommand::Back),
         "help" => Ok(DemoCommand::Help),
         "quit" => Ok(DemoCommand::Quit),
+        "setup" => Ok(DemoCommand::Setup {
+            provider: if rest.is_empty() {
+                None
+            } else {
+                Some(rest.to_string())
+            },
+        }),
         "click" => {
             if rest.is_empty() {
                 Err(CommandParseError::InvalidFormat(
