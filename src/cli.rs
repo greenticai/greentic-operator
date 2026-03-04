@@ -2744,6 +2744,17 @@ fn log_capability_bootstrap_report(
     let mut missing_recommended = Vec::new();
     for item in &expectations {
         let resolved = runner_host.resolve_capability(item.cap_id, None, scope.clone());
+        if resolved.is_none()
+            && item.cap_id == "greentic.cap.secrets.store.v1"
+            && domains.contains(&Domain::Secrets)
+            && runner_host.has_provider_packs_for_domain(Domain::Secrets)
+        {
+            operator_log::info(
+                module_path!(),
+                "capability bootstrap: using legacy secrets providers fallback for greentic.cap.secrets.store.v1",
+            );
+            continue;
+        }
         if resolved.is_none() {
             match item.priority {
                 CapabilityPriority::Required => missing_required.push(item.cap_id.to_string()),

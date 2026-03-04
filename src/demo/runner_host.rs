@@ -289,6 +289,12 @@ impl DemoRunnerHost {
         self.capability_registry.resolve_hook_chain(stage, op_name)
     }
 
+    pub fn has_provider_packs_for_domain(&self, domain: Domain) -> bool {
+        self.catalog
+            .keys()
+            .any(|(entry_domain, _)| *entry_domain == domain)
+    }
+
     pub fn capability_setup_plan(&self, ctx: &OperatorContext) -> Vec<CapabilityBinding> {
         let scope = ResolveScope {
             env: env::var("GREENTIC_ENV").ok(),

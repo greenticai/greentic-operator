@@ -108,6 +108,16 @@ services:
     enabled: auto   # auto|true|false
 ```
 
+## Capability bootstrap checks (setup/start)
+
+`demo setup` and `demo start` run a capability bootstrap report before provider flow execution.
+
+- Required (domain-driven): messaging provider, events provider, and secrets store capabilities.
+- Recommended (when messaging/events are enabled): OAuth broker and MCP exec capabilities.
+- Migration compatibility: if secrets capability is not yet explicitly offered but secrets provider packs are present, Operator logs legacy fallback usage instead of failing required checks.
+
+Details: `docs/OPERATOR_MESSAGING_PROVIDER_INTEGRATION_GUIDE.md` (section "Capability bootstrap checks in setup/start").
+
 ## Dev/demo dependency mode
 
 Dev/demo uses local path dependencies for greentic-* crates with `version = "0.4"` and

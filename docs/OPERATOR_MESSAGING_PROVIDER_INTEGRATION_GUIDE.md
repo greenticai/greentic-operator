@@ -170,4 +170,8 @@ Checks are scope-aware (env/tenant/team) and use Operator capability resolution:
 
 Operator also logs pending capability setup offers from `capability setup-plan` (`requires_setup=true` in `greentic.ext.capabilities.v1`).
 
-This keeps setup/start aligned with capability-first orchestration and surfaces missing OAuth/MCP/Secrets capabilities early, without blocking existing flows by default.
+Compatibility note for secrets migration:
+
+- If `greentic.cap.secrets.store.v1` is not resolved yet, but secrets provider packs are present for the secrets domain, setup/start treats this as a legacy-provider fallback and logs an informational message instead of flagging it as missing-required.
+
+This keeps setup/start aligned with capability-first orchestration, preserves existing secrets provider behavior during migration, and still surfaces missing OAuth/MCP/Secrets capabilities early without blocking existing flows by default.
