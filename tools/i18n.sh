@@ -7,6 +7,8 @@ cd "$ROOT_DIR"
 EN_PATH="${EN_PATH:-i18n/operator_cli/en.json}"
 AUTH_MODE="${AUTH_MODE:-auto}"
 LOCALE="${LOCALE:-en}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
+LANGS="${LANGS:-all}"
 
 usage() {
   cat <<'EOF'
@@ -19,7 +21,8 @@ Environment overrides:
   AUTH_MODE=...         Translator auth mode for translate (default: auto)
   LOCALE=...            Translator CLI locale output (default: en)
   CODEX_HOME=...        Optional codex home path for translator
-  BATCH_SIZE=...        Translate batch size (default: translator default)
+  BATCH_SIZE=...        Translate batch size (default: 64; larger batches reduce cost)
+  LANGS=...             Target languages (default: all, e.g. nl,fr,de)
   MAX_RETRIES=...       Translate max retries (default: translator default)
   GLOSSARY=...          Optional glossary JSON path
   API_KEY_STDIN=1       Pass --api-key-stdin to translator
@@ -63,12 +66,9 @@ run_translator() {
 }
 
 translate_args() {
-  local args=("--langs" "all" "--en" "$EN_PATH" "--auth-mode" "$AUTH_MODE")
+  local args=("--langs" "$LANGS" "--en" "$EN_PATH" "--auth-mode" "$AUTH_MODE" "--batch-size" "$BATCH_SIZE")
   if [[ -n "${CODEX_HOME:-}" ]]; then
     args+=("--codex-home" "$CODEX_HOME")
-  fi
-  if [[ -n "${BATCH_SIZE:-}" ]]; then
-    args+=("--batch-size" "$BATCH_SIZE")
   fi
   if [[ -n "${MAX_RETRIES:-}" ]]; then
     args+=("--max-retries" "$MAX_RETRIES")
@@ -89,6 +89,11 @@ translate_args() {
 }
 
 run_translate() {
+  echo "==> status precheck: $EN_PATH"
+  if run_translator status --langs "$LANGS" --en "$EN_PATH"; then
+    echo "==> translate: skipped (no missing/stale keys)"
+    return 0
+  fi
   echo "==> translate: $EN_PATH"
   mapfile -d '' -t args < <(translate_args)
   run_translator translate "${args[@]}"
@@ -96,12 +101,12 @@ run_translate() {
 
 run_validate() {
   echo "==> validate: $EN_PATH"
-  run_translator validate --langs all --en "$EN_PATH"
+  run_translator validate --langs "$LANGS" --en "$EN_PATH"
 }
 
 run_status() {
   echo "==> status: $EN_PATH"
-  run_translator status --langs all --en "$EN_PATH"
+  run_translator status --langs "$LANGS" --en "$EN_PATH"
 }
 
 case "$MODE" in
