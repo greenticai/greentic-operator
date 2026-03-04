@@ -20,7 +20,7 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "Host runtime shim for Greentic runner: config, pack loading, activity handling"
-homepage = "https://github.com/greentic-ai/greentic-runner"
+homepage = "https://github.com/greenticai/greentic-runner"
 readme = "README.md"
 keywords = [
     "greentic",
@@ -35,7 +35,7 @@ categories = [
     "command-line-utilities",
 ]
 license = "MIT"
-repository = "https://github.com/greentic-ai/greentic-runner"
+repository = "https://github.com/greenticai/greentic-runner"
 resolver = "2"
 
 [features]
@@ -326,3 +326,4 @@ version = "3"
 
 [dev-dependencies.tempfile]
 version = "3"
+

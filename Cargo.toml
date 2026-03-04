@@ -5,8 +5,8 @@ edition = "2024"
 rust-version = "1.91"
 description = "Greentic operator CLI for local dev and demo orchestration."
 license = "MIT"
-repository = "https://github.com/greentic-ai/greentic-operator"
-homepage = "https://github.com/greentic-ai/greentic-operator"
+repository = "https://github.com/greenticai/greentic-operator"
+homepage = "https://github.com/greenticai/greentic-operator"
 readme = "README.md"
 autobins = false
 include = [
@@ -82,6 +82,5 @@ members = [
     "secret_name",
     "crates/greentic-secrets-repro",
 ]
-
 [patch.crates-io]
 greentic-interfaces-wasmtime = { path = "vendor/patches/greentic-interfaces-wasmtime" }
