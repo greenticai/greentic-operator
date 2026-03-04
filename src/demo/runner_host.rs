@@ -60,8 +60,10 @@ use crate::runner_integration::RunnerFlavor;
 use crate::runner_integration::run_flow_with_options;
 
 use crate::capabilities::{
-    CapabilityBinding, CapabilityInstallRecord, CapabilityPackRecord, CapabilityRegistry,
-    HookStage, ResolveScope, is_binding_ready, write_install_record,
+    CAP_OAUTH_BROKER_V1, CapabilityBinding, CapabilityInstallRecord, CapabilityPackRecord,
+    CapabilityRegistry, HookStage, OAUTH_OP_AWAIT_RESULT, OAUTH_OP_GET_ACCESS_TOKEN,
+    OAUTH_OP_INITIATE_AUTH, OAUTH_OP_REQUEST_RESOURCE_TOKEN, ResolveScope,
+    is_binding_ready, is_oauth_broker_operation, write_install_record,
 };
 use crate::cards::CardRenderer;
 use crate::discovery;
@@ -351,12 +353,47 @@ impl DemoRunnerHost {
         payload_bytes: &[u8],
         ctx: &OperatorContext,
     ) -> anyhow::Result<FlowOutcome> {
+        let requested_op = op.trim();
+        if cap_id == CAP_OAUTH_BROKER_V1 {
+            if requested_op.is_empty() {
+                return Ok(capability_route_error_outcome(
+                    cap_id,
+                    "<missing-op>",
+                    format!(
+                        "oauth broker capability requires an explicit op (supported: {}, {}, {}, {})",
+                        OAUTH_OP_INITIATE_AUTH,
+                        OAUTH_OP_AWAIT_RESULT,
+                        OAUTH_OP_GET_ACCESS_TOKEN,
+                        OAUTH_OP_REQUEST_RESOURCE_TOKEN
+                    ),
+                ));
+            }
+            if !is_oauth_broker_operation(requested_op) {
+                return Ok(capability_route_error_outcome(
+                    cap_id,
+                    requested_op,
+                    format!(
+                        "unsupported oauth broker op `{requested_op}` (supported: {}, {}, {}, {})",
+                        OAUTH_OP_INITIATE_AUTH,
+                        OAUTH_OP_AWAIT_RESULT,
+                        OAUTH_OP_GET_ACCESS_TOKEN,
+                        OAUTH_OP_REQUEST_RESOURCE_TOKEN
+                    ),
+                ));
+            }
+        }
         let scope = ResolveScope {
             env: env::var("GREENTIC_ENV").ok(),
             tenant: Some(ctx.tenant.clone()),
             team: ctx.team.clone(),
         };
-        let Some(binding) = self.resolve_capability(cap_id, None, scope) else {
+        let binding = if requested_op.is_empty() {
+            self.resolve_capability(cap_id, None, scope)
+        } else {
+            self.capability_registry
+                .resolve_for_op(cap_id, None, &scope, Some(requested_op))
+        };
+        let Some(binding) = binding else {
             return Ok(missing_capability_outcome(cap_id, op, None));
         };
         if !is_binding_ready(
@@ -380,10 +417,11 @@ impl DemoRunnerHost {
             ));
         };
 
-        let target_op = if op.trim().is_empty() {
+        let target_op = if cap_id == CAP_OAUTH_BROKER_V1 || requested_op.is_empty() {
+            // OAuth broker cap.invoke always routes through the selected provider op.
             binding.provider_op.as_str()
         } else {
-            op
+            requested_op
         };
 
         // Capability invocations go through the same operator pipeline.
