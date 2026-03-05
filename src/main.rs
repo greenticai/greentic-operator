@@ -4,7 +4,11 @@ use greentic_operator::operator_i18n;
 use std::env;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    // NOTE: Do NOT call tracing_subscriber::fmt::init() here.
+    // The telemetry capability upgrade during `demo start` installs an
+    // OTel-enabled tracing subscriber. Setting a fmt subscriber first
+    // would block that upgrade (tracing only allows one global subscriber).
+    // Operator logging uses operator_log (file-based), not tracing.
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
     if env::var("GREENTIC_PROVIDER_CORE_ONLY").is_err() {
         // set_var is unsafe in this codebase, so wrap it accordingly.

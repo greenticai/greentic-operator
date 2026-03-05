@@ -15,6 +15,8 @@ use hyper_util::rt::tokio::TokioIo;
 use serde_json::json;
 use tokio::{net::TcpListener, runtime::Runtime, sync::oneshot};
 
+use tracing::info_span;
+
 use crate::demo::event_router::route_events_to_default_flow;
 use crate::demo::ingress_dispatch::dispatch_http_ingress;
 use crate::demo::ingress_types::{IngressHttpResponse, IngressRequestV1};
@@ -254,6 +256,17 @@ async fn handle_request_inner(
         remote_addr: None,
     };
 
+    let _ingress_span = info_span!(
+        "http.ingress",
+        http.method = %method,
+        http.path = %path,
+        messaging.provider = %parsed.provider,
+        tenant = %parsed.tenant,
+        team = %parsed.team,
+        otel.kind = "server",
+    )
+    .entered();
+
     let result = dispatch_http_ingress(
         state.runner_host.as_ref(),
         domain,
@@ -354,6 +367,15 @@ fn route_messaging_envelopes(
     ctx: &OperatorContext,
     envelopes: Vec<ChannelMessageEnvelope>,
 ) -> anyhow::Result<()> {
+    let _span = info_span!(
+        "messaging.pipeline",
+        messaging.provider = %provider,
+        tenant = %ctx.tenant,
+        team = %ctx.team.as_deref().unwrap_or("default"),
+        envelope_count = envelopes.len(),
+    )
+    .entered();
+
     let team = ctx.team.as_deref();
     let app_pack_path = app::resolve_app_pack_path(bundle, &ctx.tenant, team, None)
         .context("resolve app pack for messaging pipeline")?;
@@ -418,38 +440,44 @@ fn route_messaging_envelopes(
         for out_envelope in outputs {
             let message_value = serde_json::to_value(&out_envelope)?;
 
-            let plan = match egress::render_plan(runner_host, ctx, provider, message_value.clone())
-            {
-                Ok(plan) => plan,
-                Err(err) => {
-                    operator_log::warn(
-                        module_path!(),
-                        format!("[demo messaging] render_plan failed: {err}; using empty plan"),
-                    );
-                    json!({})
+            let plan = {
+                let _span = info_span!("egress.render_plan", messaging.provider = %provider).entered();
+                match egress::render_plan(runner_host, ctx, provider, message_value.clone())
+                {
+                    Ok(plan) => plan,
+                    Err(err) => {
+                        operator_log::warn(
+                            module_path!(),
+                            format!("[demo messaging] render_plan failed: {err}; using empty plan"),
+                        );
+                        json!({})
+                    }
                 }
             };
 
-            let payload = match egress::encode_payload(
-                runner_host,
-                ctx,
-                provider,
-                message_value.clone(),
-                plan,
-            ) {
-                Ok(payload) => payload,
-                Err(err) => {
-                    operator_log::warn(
-                        module_path!(),
-                        format!("[demo messaging] encode failed: {err}; using fallback payload"),
-                    );
-                    // Build a minimal payload from the envelope (same approach as run_end_to_end)
-                    let body_bytes = serde_json::to_vec(&message_value)?;
-                    ProviderPayloadV1 {
-                        content_type: "application/json".to_string(),
-                        body_b64: base64::engine::general_purpose::STANDARD.encode(&body_bytes),
-                        metadata_json: Some(serde_json::to_string(&message_value)?),
-                        metadata: None,
+            let payload = {
+                let _span = info_span!("egress.encode", messaging.provider = %provider).entered();
+                match egress::encode_payload(
+                    runner_host,
+                    ctx,
+                    provider,
+                    message_value.clone(),
+                    plan,
+                ) {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        operator_log::warn(
+                            module_path!(),
+                            format!("[demo messaging] encode failed: {err}; using fallback payload"),
+                        );
+                        // Build a minimal payload from the envelope (same approach as run_end_to_end)
+                        let body_bytes = serde_json::to_vec(&message_value)?;
+                        ProviderPayloadV1 {
+                            content_type: "application/json".to_string(),
+                            body_b64: base64::engine::general_purpose::STANDARD.encode(&body_bytes),
+                            metadata_json: Some(serde_json::to_string(&message_value)?),
+                            metadata: None,
+                        }
                     }
                 }
             };
@@ -458,13 +486,16 @@ fn route_messaging_envelopes(
             let send_input =
                 egress::build_send_payload(payload, &provider_type, &ctx.tenant, ctx.team.clone());
             let send_bytes = serde_json::to_vec(&send_input)?;
-            let outcome = runner_host.invoke_provider_op(
-                Domain::Messaging,
-                provider,
-                "send_payload",
-                &send_bytes,
-                ctx,
-            )?;
+            let outcome = {
+                let _span = info_span!("egress.send_payload", messaging.provider = %provider).entered();
+                runner_host.invoke_provider_op(
+                    Domain::Messaging,
+                    provider,
+                    "send_payload",
+                    &send_bytes,
+                    ctx,
+                )?
+            };
 
             // Check the actual provider response (ok field), not just WASM success.
             let provider_ok = outcome

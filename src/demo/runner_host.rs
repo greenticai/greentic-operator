@@ -27,6 +27,7 @@ use greentic_types::decode_pack_manifest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use tokio::runtime::Runtime as TokioRuntime;
+use tracing::info_span;
 use zip::ZipArchive;
 
 /// Create a Tokio runtime for blocking async operations.
@@ -361,6 +362,13 @@ impl DemoRunnerHost {
         payload_bytes: &[u8],
         ctx: &OperatorContext,
     ) -> anyhow::Result<FlowOutcome> {
+        let _span = tracing::info_span!(
+            "invoke_capability",
+            cap_id = %cap_id,
+            op = %op,
+            tenant = %ctx.tenant,
+        )
+        .entered();
         let requested_op = op.trim();
         if cap_id == CAP_OAUTH_BROKER_V1 {
             if requested_op.is_empty() {
@@ -499,6 +507,15 @@ impl DemoRunnerHost {
         payload_bytes: &[u8],
         ctx: &OperatorContext,
     ) -> anyhow::Result<FlowOutcome> {
+        let _span = info_span!(
+            "provider.op",
+            provider.type = %provider_type,
+            provider.op = %op_id,
+            provider.domain = %domains::domain_name(domain),
+            tenant = %ctx.tenant,
+        )
+        .entered();
+
         let mut envelope = OperationEnvelope::new(op_id, payload_bytes, ctx);
         let token_validation_outcome =
             self.evaluate_token_validation_pre_hook(&mut envelope, payload_bytes, ctx)?;

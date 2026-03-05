@@ -2037,6 +2037,99 @@ impl DemoUpArgs {
                 &domains_to_setup,
             );
 
+            // --- Telemetry upgrade from capability provider ---
+            {
+                let tel_ctx = OperatorContext {
+                    tenant: tenant_ref.clone(),
+                    team: team_ref.clone(),
+                    correlation_id: None,
+                };
+                match capability_runner.invoke_capability(
+                    "greentic.cap.telemetry.v1",
+                    "telemetry.configure",
+                    b"{}",
+                    &tel_ctx,
+                ) {
+                    Ok(outcome) if outcome.success => {
+                        if let Some(ref output) = outcome.output {
+                            let config_value = if output.get("output").is_some() {
+                                &output["output"]
+                            } else {
+                                output
+                            };
+                            operator_log::info(
+                                module_path!(),
+                                format!(
+                                    "telemetry provider config: {}",
+                                    serde_json::to_string_pretty(config_value)
+                                        .unwrap_or_else(|_| "<serialize error>".to_string()),
+                                ),
+                            );
+                            match serde_json::from_value::<
+                                greentic_telemetry::provider::TelemetryProviderConfig,
+                            >(config_value.clone())
+                            {
+                                Ok(tel_config) => {
+                                    match greentic_telemetry::provider::init_from_provider_config(
+                                        &tel_config,
+                                    ) {
+                                        Ok(()) => {
+                                            operator_log::info(
+                                                module_path!(),
+                                                "telemetry upgraded from capability provider",
+                                            );
+                                            // Emit a tracing span to verify OTel export works
+                                            let _span = tracing::info_span!(
+                                                "operator.telemetry.upgrade",
+                                                otel.status_code = "OK",
+                                                service.name = "greentic-operator",
+                                            )
+                                            .entered();
+                                            tracing::info!("OTel pipeline active");
+                                        }
+                                        Err(e) => {
+                                            operator_log::warn(
+                                                module_path!(),
+                                                format!(
+                                                    "telemetry upgrade init failed: {e}; continuing with default telemetry"
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    operator_log::warn(
+                                        module_path!(),
+                                        format!(
+                                            "telemetry config parse failed: {e}; continuing with default telemetry"
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Ok(outcome) => {
+                        let reason = outcome
+                            .error
+                            .unwrap_or_else(|| "unknown".to_string());
+                        operator_log::info(
+                            module_path!(),
+                            format!(
+                                "telemetry capability not available: {reason}; using default telemetry"
+                            ),
+                        );
+                    }
+                    Err(e) => {
+                        operator_log::warn(
+                            module_path!(),
+                            format!(
+                                "telemetry capability invocation failed: {e}; using default telemetry"
+                            ),
+                        );
+                    }
+                }
+            }
+
             let mut cloudflared_config = match self.cloudflared {
                 CloudflaredModeArg::Off => None,
                 CloudflaredModeArg::On => {
