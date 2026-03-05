@@ -29,7 +29,7 @@ The accompanying `crates/greentic-secrets-repro` crate proves this dev store pat
 
   1. Run `greentic-operator setup --bundle <BUNDLE>` (or `demo setup`, `domain setup`, etc.) so the operator opens the dev store, scans packs/providers for secret requirements, and seeds missing URIs from `seeds.yaml` (or placeholders).
   2. Confirm the generated store contains the expected URIs and values (`.greentic/dev/.dev.secrets.env` or by rerunning `demo setup --skip-secrets-init` to view the structure).
-  3. Use `greentic-operator demo send` / flows / other CLI operations; they now resolve secrets from the same dev store, and missing keys are loudly reported with the URI, env-style key, store path, and a hint to rerun setup or edit `.dev.secrets.env`.
+  3. Use `gtc op demo send` / flows / other CLI operations; they now resolve secrets from the same dev store, and missing keys are loudly reported with the URI, env-style key, store path, and a hint to rerun setup or edit `.dev.secrets.env`.
 
 ## What not to do anymore
 

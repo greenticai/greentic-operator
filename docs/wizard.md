@@ -7,7 +7,7 @@ Related playbooks:
 
 ## Command
 
-`greentic-operator demo wizard`
+`gtc op demo wizard`
 
 ## Behavior
 

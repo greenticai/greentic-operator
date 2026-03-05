@@ -1,10 +1,10 @@
 PR-OP-01
-greentic-operator demo wizard — Bundle Composer using Existing Bundle APIs + Pack-Declared Setup
+gtc op demo wizard — Bundle Composer using Existing Bundle APIs + Pack-Declared Setup
 Goal
 
 Add a generic wizard entrypoint:
 
-greentic-operator demo wizard
+gtc op demo wizard
 
 that can create or update a bundle by:
 
@@ -78,7 +78,7 @@ What APIs are safe to call in a “plan-only” phase
 Deliverable: a short map of the internal APIs the wizard must reuse.
 
 Important: if there’s already a “bundle init” / “bundle write” helper, use it; do not reimplement.
-Additional audit requirement: trace `greentic-operator demo start` and `greentic-operator demo allow` end-to-end and reuse their canonical update path so resolver-visible changes are immediate.
+Additional audit requirement: trace `gtc op demo start` and `gtc op demo allow` end-to-end and reuse their canonical update path so resolver-visible changes are immediate.
 
 1) Add wizard provider module (plan-first)
 
@@ -182,7 +182,7 @@ Wizard must call/reuse the same underlying functions as `demo allow`; do not inv
 
 Add or update the command:
 
-greentic-operator demo wizard
+gtc op demo wizard
 
 Behavior:
 
@@ -245,11 +245,11 @@ Resolved design answers (locked)
 
 1) Canonical bundle create/materialize/load/validate API
 
-Use the internal APIs behind existing `greentic-operator demo` flows and bundle lifecycle that already maintain manifests, run resolver, and produce artifacts consumed by demo start. Bundle updates must integrate with resolver pipeline so changes are visible immediately (same behavior as `demo allow`).
+Use the internal APIs behind existing `gtc op demo` flows and bundle lifecycle that already maintain manifests, run resolver, and produce artifacts consumed by demo start. Bundle updates must integrate with resolver pipeline so changes are visible immediately (same behavior as `demo allow`).
 
 2) Wizard CLI scaffold
 
-Extend existing CLI and demo bundle subsystem. Preferred command: `greentic-operator demo wizard`. No new binaries or parallel command structures.
+Extend existing CLI and demo bundle subsystem. Preferred command: `gtc op demo wizard`. No new binaries or parallel command structures.
 
 3) Pack resolver API
 
@@ -355,5 +355,5 @@ Implement as much as possible without repeatedly asking permission.
 Do an audit first to locate the correct bundle creation/materialization APIs and pack resolver.
 Do not invent a new bundle directory layout. Use existing internal bundle writer/loader.
 Keep dry_run side-effect free and preserve existing CLI UX.
-Use the existing gmap + resolver allow pipeline (same semantics as `greentic-operator demo allow`). Do not invent allow storage. Wizard must write gmap rules (`PACK[/FLOW[/NODE]]` up to 3 segments), rerun resolver, and ensure the resolved manifest is copied/overwritten so demo start sees changes immediately without rebuild. Leave committed `[patch.crates-io]` until test cycle is complete and publishing is ready.
+Use the existing gmap + resolver allow pipeline (same semantics as `gtc op demo allow`). Do not invent allow storage. Wizard must write gmap rules (`PACK[/FLOW[/NODE]]` up to 3 segments), rerun resolver, and ensure the resolved manifest is copied/overwritten so demo start sees changes immediately without rebuild. Leave committed `[patch.crates-io]` until test cycle is complete and publishing is ready.
 
