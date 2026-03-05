@@ -1,5 +1,8 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::capabilities::{CAP_MESSAGING_V1, CapabilityPackRecord, CapabilityRegistry};
+use crate::domains::Domain;
 use crate::offers::{OfferRegistry, discover_gtpacks};
 
 pub fn demo_doctor(bundle_root: &Path, pack_command: &Path) -> anyhow::Result<()> {
@@ -41,6 +44,42 @@ pub fn demo_doctor(bundle_root: &Path, pack_command: &Path) -> anyhow::Result<()
     }
     for (contract, count) in offers.subs_counts_by_contract() {
         println!("  subs contract={contract} count={count}");
+    }
+
+    // Messaging capability lint check
+    let pack_index: BTreeMap<_, _> = discovered
+        .iter()
+        .map(|path| {
+            let pack_id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            (
+                path.clone(),
+                CapabilityPackRecord {
+                    pack_id,
+                    domain: Domain::Messaging,
+                },
+            )
+        })
+        .collect();
+    if let Ok(cap_registry) = CapabilityRegistry::build_from_pack_index(&pack_index) {
+        let messaging_offers = cap_registry.offers_for_capability(CAP_MESSAGING_V1);
+        if messaging_offers.is_empty() {
+            println!(
+                "  INFO: no {} offers found — no messaging providers registered",
+                CAP_MESSAGING_V1
+            );
+        } else {
+            println!(
+                "  messaging.providers registered={}",
+                messaging_offers.len()
+            );
+        }
+        for warning in cap_registry.validate_messaging_offers() {
+            println!("  WARN: {warning}");
+        }
     }
 
     Ok(())

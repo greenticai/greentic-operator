@@ -1,3 +1,6 @@
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::too_many_arguments)]
+
 pub mod bin_resolver;
 pub mod capabilities;
 pub mod cards;
