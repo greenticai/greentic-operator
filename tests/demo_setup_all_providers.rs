@@ -92,10 +92,13 @@ fn demo_setup_runs_all_domains() {
     let root = temp.path();
     let messaging = root.join("providers").join("messaging");
     let events = root.join("providers").join("events");
+    let oauth = root.join("providers").join("oauth");
     std::fs::create_dir_all(&messaging).unwrap();
     std::fs::create_dir_all(&events).unwrap();
+    std::fs::create_dir_all(&oauth).unwrap();
     write_pack(&messaging.join("a.gtpack"), "msg-a", &["setup_default"]).unwrap();
     write_pack(&events.join("b.gtpack"), "evt-b", &["setup_default"]).unwrap();
+    write_pack(&oauth.join("c.gtpack"), "oauth-c", &["setup_default"]).unwrap();
 
     let status = Command::new(fake_bin("greentic-operator"))
         .args([
@@ -121,6 +124,7 @@ fn demo_setup_runs_all_domains() {
         .join("providers");
     assert!(providers_root.join("msg-a.setup.json").exists());
     assert!(providers_root.join("evt-b.setup.json").exists());
+    assert!(providers_root.join("oauth-c.setup.json").exists());
     assert!(
         providers_root
             .join("msg-a")
@@ -157,6 +161,26 @@ fn demo_setup_runs_all_domains() {
     assert!(
         providers_root
             .join("evt-b")
+            .join("answers")
+            .join("setup.answers.cbor")
+            .exists()
+    );
+    assert!(
+        providers_root
+            .join("oauth-c")
+            .join("config.envelope.cbor")
+            .exists()
+    );
+    assert!(
+        providers_root
+            .join("oauth-c")
+            .join("answers")
+            .join("setup.answers.json")
+            .exists()
+    );
+    assert!(
+        providers_root
+            .join("oauth-c")
             .join("answers")
             .join("setup.answers.cbor")
             .exists()

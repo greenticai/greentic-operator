@@ -1147,6 +1147,7 @@ fn create_demo_bundle_structure(root: &Path, bundle_name: Option<&str>) -> anyho
         "providers/messaging",
         "providers/events",
         "providers/secrets",
+        "providers/oauth",
         "packs",
         "resolved",
         "state",

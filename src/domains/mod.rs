@@ -12,6 +12,7 @@ pub enum Domain {
     Messaging,
     Events,
     Secrets,
+    OAuth,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +64,12 @@ pub fn config(domain: Domain) -> DomainConfig {
             diagnostics_flow: "diagnostics",
             verify_flows: &[],
         },
+        Domain::OAuth => DomainConfig {
+            providers_dir: "providers/oauth",
+            setup_flow: "setup_default",
+            diagnostics_flow: "diagnostics",
+            verify_flows: &[],
+        },
     }
 }
 
@@ -71,6 +78,7 @@ pub fn validator_pack_path(root: &Path, domain: Domain) -> Option<PathBuf> {
         Domain::Messaging => "validators-messaging.gtpack",
         Domain::Events => "validators-events.gtpack",
         Domain::Secrets => "validators-secrets.gtpack",
+        Domain::OAuth => "validators-oauth.gtpack",
     };
     let path = root.join("validators").join(domain_name(domain)).join(name);
     if path.exists() { Some(path) } else { None }
@@ -740,5 +748,6 @@ pub(crate) fn domain_name(domain: Domain) -> &'static str {
         Domain::Messaging => "messaging",
         Domain::Events => "events",
         Domain::Secrets => "secrets",
+        Domain::OAuth => "oauth",
     }
 }

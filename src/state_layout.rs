@@ -34,6 +34,7 @@ fn domain_name(domain: Domain) -> &'static str {
         Domain::Messaging => "messaging",
         Domain::Events => "events",
         Domain::Secrets => "secrets",
+        Domain::OAuth => "oauth",
     }
 }
 

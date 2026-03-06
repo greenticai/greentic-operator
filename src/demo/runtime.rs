@@ -736,6 +736,9 @@ pub fn demo_up_services(
         if discovery.domains.events {
             domain_labels.push("events");
         }
+        if discovery.domains.oauth {
+            domain_labels.push("oauth");
+        }
         let domain_list = if domain_labels.is_empty() {
             "none".to_string()
         } else {

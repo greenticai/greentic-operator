@@ -141,6 +141,8 @@ enum DomainArg {
     Messaging,
     Events,
     Secrets,
+    #[value(name = "oauth", alias = "o-auth")]
+    OAuth,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -217,7 +219,7 @@ struct DemoUpArgs {
         value_delimiter = ',',
         default_value = "all",
         help_heading = "Optional options",
-        help = "Domain(s) to operate on (messaging, events, secrets, all); defaults to auto-detect from the bundle."
+        help = "Domain(s) to operate on (messaging, events, secrets, oauth, all); defaults to auto-detect from the bundle."
     )]
     domain: DemoSetupDomainArg,
     #[arg(
@@ -380,6 +382,8 @@ enum DemoSetupDomainArg {
     Messaging,
     Events,
     Secrets,
+    #[value(name = "oauth", alias = "o-auth")]
+    OAuth,
     #[value(alias = "auto")]
     All,
 }
@@ -397,12 +401,14 @@ impl DemoSetupDomainArg {
             DemoSetupDomainArg::Messaging => vec![Domain::Messaging],
             DemoSetupDomainArg::Events => vec![Domain::Events],
             DemoSetupDomainArg::Secrets => vec![Domain::Secrets],
+            DemoSetupDomainArg::OAuth => vec![Domain::OAuth],
             DemoSetupDomainArg::All => {
                 let mut enabled = Vec::new();
                 let has_messaging = discovery
                     .map(|value| value.domains.messaging)
                     .unwrap_or(true);
                 let has_events = discovery.map(|value| value.domains.events).unwrap_or(true);
+                let has_oauth = discovery.map(|value| value.domains.oauth).unwrap_or(true);
                 if has_messaging {
                     enabled.push(Domain::Messaging);
                 }
@@ -410,6 +416,9 @@ impl DemoSetupDomainArg {
                     enabled.push(Domain::Events);
                 }
                 enabled.push(Domain::Secrets);
+                if has_oauth {
+                    enabled.push(Domain::OAuth);
+                }
                 enabled
             }
         }
@@ -430,7 +439,7 @@ impl From<NatsModeArg> for demo::NatsMode {
 #[command(
     about = "Run provider setup flows against a demo bundle.",
     long_about = "Executes setup flows for provider packs included in the bundle.",
-    after_help = "Main options:\n  --bundle <DIR>\n  --tenant <TENANT>\n\nOptional options:\n  --team <TEAM>\n  --domain <messaging|events|secrets|all> (default: all)\n  --provider <FILTER>\n  --dry-run\n  --format <text|json|yaml> (default: text)\n  --parallel <N> (default: 1)\n  --allow-missing-setup\n  --allow-contract-change\n  --backup\n  --online\n  --secrets-env <ENV>\n  --skip-secrets-init\n  --setup-input <PATH>\n  --runner-binary <PATH>\n  --best-effort"
+    after_help = "Main options:\n  --bundle <DIR>\n  --tenant <TENANT>\n\nOptional options:\n  --team <TEAM>\n  --domain <messaging|events|secrets|oauth|all> (default: all)\n  --provider <FILTER>\n  --dry-run\n  --format <text|json|yaml> (default: text)\n  --parallel <N> (default: 1)\n  --allow-missing-setup\n  --allow-contract-change\n  --backup\n  --online\n  --secrets-env <ENV>\n  --skip-secrets-init\n  --setup-input <PATH>\n  --runner-binary <PATH>\n  --best-effort"
 )]
 struct DemoSetupArgs {
     #[arg(long)]
@@ -1625,8 +1634,13 @@ impl DemoCapabilityInvokeArgs {
         )?;
         let secrets_handle =
             secrets_gate::resolve_secrets_manager(&self.bundle, &self.tenant, Some(&self.team))?;
-        let runner_host =
-            DemoRunnerHost::new(self.bundle.clone(), &discovery, None, secrets_handle, false)?;
+        let runner_host = DemoRunnerHost::new(
+            self.bundle.clone(),
+            &discovery,
+            None,
+            secrets_handle,
+            false,
+        )?;
         let ctx = OperatorContext {
             tenant: self.tenant.clone(),
             team: Some(self.team.clone()),
@@ -1984,10 +1998,11 @@ impl DemoUpArgs {
             operator_log::info(
                 module_path!(),
                 format!(
-                    "bundle discovery targets=[{}] messaging={} events={} providers={}",
+                    "bundle discovery targets=[{}] messaging={} events={} oauth={} providers={}",
                     &target_summary,
                     discovery.domains.messaging,
                     discovery.domains.events,
+                    discovery.domains.oauth,
                     discovery.providers.len()
                 ),
             );
@@ -2636,7 +2651,7 @@ impl DemoSetupArgs {
         );
         for domain in domains {
             let discovered_providers = match domain {
-                Domain::Messaging | Domain::Events => Some(
+                Domain::Messaging | Domain::Events | Domain::OAuth => Some(
                     discovery
                         .providers
                         .iter()
@@ -4549,7 +4564,12 @@ fn run_wizard_setup_for_target(
     allowed_providers: Option<BTreeSet<String>>,
     preloaded_setup_answers: Option<SetupInputAnswers>,
 ) -> anyhow::Result<()> {
-    for domain in [Domain::Messaging, Domain::Events, Domain::Secrets] {
+    for domain in [
+        Domain::Messaging,
+        Domain::Events,
+        Domain::Secrets,
+        Domain::OAuth,
+    ] {
         run_domain_command(DomainRunArgs {
             root: bundle.to_path_buf(),
             state_root: None,
@@ -5576,6 +5596,7 @@ fn create_demo_bundle_structure(root: &Path) -> anyhow::Result<()> {
         "providers/messaging",
         "providers/events",
         "providers/secrets",
+        "providers/oauth",
         "packs",
         "resolved",
         "state",
@@ -5972,6 +5993,7 @@ fn demo_provider_files(
         Domain::Messaging => "messaging",
         Domain::Events => "events",
         Domain::Secrets => "secrets",
+        Domain::OAuth => "oauth",
     };
     let Some(list) = manifest.providers.get(key) else {
         return Ok(Some(std::collections::BTreeSet::new()));
@@ -7067,14 +7089,14 @@ fn build_input_payload(
     }
 
     let resolved_public_base_url = public_base_url.map(|value| value.to_string()).or_else(|| {
-        if matches!(domain, Domain::Messaging | Domain::Events) {
+        if matches!(domain, Domain::Messaging | Domain::Events | Domain::OAuth) {
             read_public_base_url(root, tenant, team)
         } else {
             None
         }
     });
 
-    if matches!(domain, Domain::Messaging | Domain::Events) {
+    if matches!(domain, Domain::Messaging | Domain::Events | Domain::OAuth) {
         let mut config = serde_json::json!({});
         if let Some(url) = resolved_public_base_url.as_ref() {
             payload["public_base_url"] = serde_json::Value::String(url.clone());
@@ -7466,6 +7488,7 @@ impl From<DomainArg> for Domain {
             DomainArg::Messaging => Domain::Messaging,
             DomainArg::Events => Domain::Events,
             DomainArg::Secrets => Domain::Secrets,
+            DomainArg::OAuth => Domain::OAuth,
         }
     }
 }

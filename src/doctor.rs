@@ -33,7 +33,12 @@ pub fn run_doctor(
 
     let domains = match scope {
         DoctorScope::One(domain) => vec![domain],
-        DoctorScope::All => vec![Domain::Messaging, Domain::Events, Domain::Secrets],
+        DoctorScope::All => vec![
+            Domain::Messaging,
+            Domain::Events,
+            Domain::Secrets,
+            Domain::OAuth,
+        ],
     };
 
     let mut runs = Vec::new();
@@ -219,6 +224,7 @@ fn domain_name(domain: Domain) -> &'static str {
         Domain::Messaging => "messaging",
         Domain::Events => "events",
         Domain::Secrets => "secrets",
+        Domain::OAuth => "oauth",
     }
 }
 
