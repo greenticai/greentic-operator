@@ -1,5 +1,10 @@
 # Demo Wizard
 
+Related playbooks:
+
+- `docs/creating-bundles-from-oci-for-humans.md`
+- `docs/creating-bundles-from-oci-for-codex.md`
+
 ## Command
 
 `greentic-operator demo wizard`

@@ -118,6 +118,12 @@ services:
 
 Details: `docs/OPERATOR_MESSAGING_PROVIDER_INTEGRATION_GUIDE.md` (section "Capability bootstrap checks in setup/start").
 
+## Wizard Playbooks
+
+- `docs/wizard.md`
+- `docs/creating-bundles-from-oci-for-humans.md`
+- `docs/creating-bundles-from-oci-for-codex.md`
+
 ## Dev/demo dependency mode
 
 Dev/demo uses local path dependencies for greentic-* crates with `version = "0.4"` and
@@ -232,4 +238,3 @@ Use `greentic-operator demo subscriptions` to manage bindings manually:
 These commands are handy for smoke testing provider packs and delegated scenarios without running a full demo stack.
 
 Snapshot `docs/demo-universal-subscriptions.yaml` contains a ready-to-use `greentic.demo.yaml` snippet you can drop into a bundle before running `demo start --subscriptions-mode universal_ops`.
-
