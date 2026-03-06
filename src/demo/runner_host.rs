@@ -957,8 +957,6 @@ impl DemoRunnerHost {
             );
         }
 
-        let runtime = TokioRuntime::new()
-            .context("failed to create tokio runtime for provider invocation")?;
         let payload = payload_bytes.to_vec();
         let result = make_runtime_or_thread_scope(|runtime| {
             runtime.block_on(async {
