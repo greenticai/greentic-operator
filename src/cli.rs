@@ -1634,13 +1634,8 @@ impl DemoCapabilityInvokeArgs {
         )?;
         let secrets_handle =
             secrets_gate::resolve_secrets_manager(&self.bundle, &self.tenant, Some(&self.team))?;
-        let runner_host = DemoRunnerHost::new(
-            self.bundle.clone(),
-            &discovery,
-            None,
-            secrets_handle,
-            false,
-        )?;
+        let runner_host =
+            DemoRunnerHost::new(self.bundle.clone(), &discovery, None, secrets_handle, false)?;
         let ctx = OperatorContext {
             tenant: self.tenant.clone(),
             team: Some(self.team.clone()),

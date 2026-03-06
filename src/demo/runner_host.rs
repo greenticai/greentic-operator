@@ -60,11 +60,10 @@ use crate::runner_integration::RunnerFlavor;
 use crate::runner_integration::run_flow_with_options;
 
 use crate::capabilities::{
-    CAP_OAUTH_BROKER_V1, CAP_OAUTH_TOKEN_VALIDATION_V1, CapabilityBinding,
-    CapabilityInstallRecord, CapabilityPackRecord, CapabilityRegistry, HookStage,
-    OAUTH_OP_AWAIT_RESULT, OAUTH_OP_GET_ACCESS_TOKEN, OAUTH_OP_INITIATE_AUTH,
-    OAUTH_OP_REQUEST_RESOURCE_TOKEN, ResolveScope,
-    is_binding_ready, is_oauth_broker_operation, write_install_record,
+    CAP_OAUTH_BROKER_V1, CAP_OAUTH_TOKEN_VALIDATION_V1, CapabilityBinding, CapabilityInstallRecord,
+    CapabilityPackRecord, CapabilityRegistry, HookStage, OAUTH_OP_AWAIT_RESULT,
+    OAUTH_OP_GET_ACCESS_TOKEN, OAUTH_OP_INITIATE_AUTH, OAUTH_OP_REQUEST_RESOURCE_TOKEN,
+    ResolveScope, is_binding_ready, is_oauth_broker_operation, write_install_record,
 };
 use crate::cards::CardRenderer;
 use crate::discovery;
@@ -585,31 +584,33 @@ impl DemoRunnerHost {
             let run_dir = state_layout::run_dir(&self.bundle_root, domain, &pack.pack_id, flow_id)?;
             std::fs::create_dir_all(&run_dir)?;
 
-            let render_outcome =
-                self.card_renderer
-                    .render_if_needed(provider_type, payload_bytes, |cap_id, op, input| {
-                        let outcome = self.invoke_capability(cap_id, op, input, ctx)?;
-                        if !outcome.success {
-                            let reason = outcome
-                                .error
-                                .clone()
-                                .or(outcome.raw.clone())
-                                .unwrap_or_else(|| "capability invocation failed".to_string());
-                            return Err(anyhow!(
-                                "card capability {}:{} failed: {}",
-                                cap_id,
-                                op,
-                                reason
-                            ));
-                        }
-                        outcome.output.ok_or_else(|| {
-                            anyhow!(
-                                "card capability {}:{} returned no structured output",
-                                cap_id,
-                                op
-                            )
-                        })
-                    })?;
+            let render_outcome = self.card_renderer.render_if_needed(
+                provider_type,
+                payload_bytes,
+                |cap_id, op, input| {
+                    let outcome = self.invoke_capability(cap_id, op, input, ctx)?;
+                    if !outcome.success {
+                        let reason = outcome
+                            .error
+                            .clone()
+                            .or(outcome.raw.clone())
+                            .unwrap_or_else(|| "capability invocation failed".to_string());
+                        return Err(anyhow!(
+                            "card capability {}:{} failed: {}",
+                            cap_id,
+                            op,
+                            reason
+                        ));
+                    }
+                    outcome.output.ok_or_else(|| {
+                        anyhow!(
+                            "card capability {}:{} returned no structured output",
+                            cap_id,
+                            op
+                        )
+                    })
+                },
+            )?;
             let payload = serde_json::from_slice(&render_outcome.bytes).unwrap_or_else(|_| {
                 json!({
                     "payload": general_purpose::STANDARD.encode(&render_outcome.bytes)
@@ -1377,9 +1378,10 @@ fn extract_token_validation_request(payload_bytes: &[u8]) -> Option<JsonValue> {
     ) {
         request.insert("issuer".to_string(), JsonValue::String(issuer));
     }
-    if let Some(audience) =
-        first_value_at_paths(&payload, &["/token_validation/audience", "/auth/audience", "/audience"])
-    {
+    if let Some(audience) = first_value_at_paths(
+        &payload,
+        &["/token_validation/audience", "/auth/audience", "/audience"],
+    ) {
         request.insert("audience".to_string(), normalize_string_or_array(audience));
     }
     if let Some(scopes) = first_value_at_paths(
@@ -1558,7 +1560,10 @@ mod tests {
         let request =
             extract_token_validation_request(&serde_json::to_vec(&payload).expect("payload bytes"))
                 .expect("request");
-        assert_eq!(request.pointer("/token").and_then(JsonValue::as_str), Some("token-123"));
+        assert_eq!(
+            request.pointer("/token").and_then(JsonValue::as_str),
+            Some("token-123")
+        );
         assert_eq!(
             request.pointer("/issuer").and_then(JsonValue::as_str),
             Some("https://issuer.example")
@@ -1603,7 +1608,10 @@ mod tests {
         });
         match evaluate_token_validation_output(&output) {
             TokenValidationDecision::Allow(Some(claims)) => {
-                assert_eq!(claims.pointer("/sub").and_then(JsonValue::as_str), Some("user-1"));
+                assert_eq!(
+                    claims.pointer("/sub").and_then(JsonValue::as_str),
+                    Some("user-1")
+                );
             }
             TokenValidationDecision::Allow(None) => panic!("expected claims"),
             TokenValidationDecision::Deny(reason) => panic!("unexpected deny: {reason}"),

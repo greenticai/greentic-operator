@@ -98,8 +98,7 @@ impl CardRenderer {
                 Value::String(serde_json::to_string(&adaptive_card)?),
             );
             metadata.insert("oauth_card_resolved".to_string(), resolve_result);
-            if had_teams_placeholder
-                && (!teams_native_platform || teams_connection_name.is_none())
+            if had_teams_placeholder && (!teams_native_platform || teams_connection_name.is_none())
             {
                 metadata.insert(
                     "oauth_card_downgrade".to_string(),
@@ -117,9 +116,7 @@ impl CardRenderer {
             }
         }
         let rendered = serde_json::to_vec(&payload_json)?;
-        Ok(RenderOutcome {
-            bytes: rendered,
-        })
+        Ok(RenderOutcome { bytes: rendered })
     }
 }
 
@@ -199,17 +196,19 @@ fn rewrite_oauth_fields(
                 .get("type")
                 .and_then(Value::as_str)
                 .is_some_and(|value| value.eq_ignore_ascii_case("Action.OpenUrl"));
-            let has_oauth_url_marker = map.get("url").and_then(Value::as_str) == Some("oauth://start");
+            let has_oauth_url_marker =
+                map.get("url").and_then(Value::as_str) == Some("oauth://start");
             if is_open_url && has_oauth_url_marker {
                 map.insert("url".to_string(), Value::String(start_url.to_string()));
             }
             if map.get("connectionName").and_then(Value::as_str)
                 == Some("{{oauth.teams.connectionName}}")
             {
-                if teams_native_platform
-                    && let Some(name) = teams_connection_name
-                {
-                    map.insert("connectionName".to_string(), Value::String(name.to_string()));
+                if teams_native_platform && let Some(name) = teams_connection_name {
+                    map.insert(
+                        "connectionName".to_string(),
+                        Value::String(name.to_string()),
+                    );
                 } else {
                     map.remove("connectionName");
                 }
