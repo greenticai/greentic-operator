@@ -51,7 +51,7 @@ fn parse_providers_value(
             Some(domain) => domain,
             None => {
                 return Err(anyhow!(
-                    "unknown domain '{domain_key}' in providers input (expected messaging|events|secrets)"
+                    "unknown domain '{domain_key}' in providers input (expected messaging|events|secrets|oauth)"
                 ));
             }
         };
@@ -77,6 +77,7 @@ fn domain_from_str(value: &str) -> Option<Domain> {
         "messaging" => Some(Domain::Messaging),
         "events" => Some(Domain::Events),
         "secrets" => Some(Domain::Secrets),
+        "oauth" => Some(Domain::OAuth),
         _ => None,
     }
 }

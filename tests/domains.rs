@@ -69,3 +69,21 @@ fn plan_generation_respects_flow_presence() {
         domains::plan_runs(Domain::Events, DomainAction::Setup, &packs, None, false);
     assert!(missing_setup.is_err());
 }
+
+#[test]
+fn oauth_domain_discovery_uses_oauth_provider_dir() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let providers = root.join("providers").join("oauth");
+    std::fs::create_dir_all(&providers).unwrap();
+    write_pack(
+        &providers.join("oauth-provider.gtpack"),
+        "oauth-provider",
+        &["setup_default", "diagnostics"],
+    )
+    .unwrap();
+
+    let packs = domains::discover_provider_packs(root, Domain::OAuth).unwrap();
+    assert_eq!(packs.len(), 1);
+    assert_eq!(packs[0].pack_id, "oauth-provider");
+}

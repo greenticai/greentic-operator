@@ -60,8 +60,10 @@ use crate::runner_integration::RunnerFlavor;
 use crate::runner_integration::run_flow_with_options;
 
 use crate::capabilities::{
-    CapabilityBinding, CapabilityInstallRecord, CapabilityPackRecord, CapabilityRegistry,
-    HookStage, ResolveScope, is_binding_ready, write_install_record,
+    CAP_OAUTH_BROKER_V1, CAP_OAUTH_TOKEN_VALIDATION_V1, CapabilityBinding, CapabilityInstallRecord,
+    CapabilityPackRecord, CapabilityRegistry, HookStage, OAUTH_OP_AWAIT_RESULT,
+    OAUTH_OP_GET_ACCESS_TOKEN, OAUTH_OP_INITIATE_AUTH, OAUTH_OP_REQUEST_RESOURCE_TOKEN,
+    ResolveScope, is_binding_ready, is_oauth_broker_operation, write_install_record,
 };
 use crate::cards::CardRenderer;
 use crate::discovery;
@@ -107,6 +109,8 @@ struct OperationEnvelopeContext {
     tenant: String,
     team: Option<String>,
     correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth_claims: Option<JsonValue>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -129,6 +133,7 @@ impl OperationEnvelope {
                 tenant: ctx.tenant.clone(),
                 team: ctx.team.clone(),
                 correlation_id: ctx.correlation_id.clone(),
+                auth_claims: None,
             },
             payload_cbor: payload.to_vec(),
             meta_cbor: None,
@@ -220,7 +225,12 @@ impl DemoRunnerHost {
             .iter()
             .map(|provider| (provider.pack_path.clone(), provider.provider_id.clone()))
             .collect::<HashMap<_, _>>();
-        for domain in [Domain::Messaging, Domain::Events, Domain::Secrets] {
+        for domain in [
+            Domain::Messaging,
+            Domain::Events,
+            Domain::Secrets,
+            Domain::OAuth,
+        ] {
             let is_demo_bundle = bundle_root.join("greentic.demo.yaml").exists();
             let packs = if is_demo_bundle {
                 domains::discover_provider_packs_cbor_only(&bundle_root, domain)?
@@ -351,12 +361,47 @@ impl DemoRunnerHost {
         payload_bytes: &[u8],
         ctx: &OperatorContext,
     ) -> anyhow::Result<FlowOutcome> {
+        let requested_op = op.trim();
+        if cap_id == CAP_OAUTH_BROKER_V1 {
+            if requested_op.is_empty() {
+                return Ok(capability_route_error_outcome(
+                    cap_id,
+                    "<missing-op>",
+                    format!(
+                        "oauth broker capability requires an explicit op (supported: {}, {}, {}, {})",
+                        OAUTH_OP_INITIATE_AUTH,
+                        OAUTH_OP_AWAIT_RESULT,
+                        OAUTH_OP_GET_ACCESS_TOKEN,
+                        OAUTH_OP_REQUEST_RESOURCE_TOKEN
+                    ),
+                ));
+            }
+            if !is_oauth_broker_operation(requested_op) {
+                return Ok(capability_route_error_outcome(
+                    cap_id,
+                    requested_op,
+                    format!(
+                        "unsupported oauth broker op `{requested_op}` (supported: {}, {}, {}, {})",
+                        OAUTH_OP_INITIATE_AUTH,
+                        OAUTH_OP_AWAIT_RESULT,
+                        OAUTH_OP_GET_ACCESS_TOKEN,
+                        OAUTH_OP_REQUEST_RESOURCE_TOKEN
+                    ),
+                ));
+            }
+        }
         let scope = ResolveScope {
             env: env::var("GREENTIC_ENV").ok(),
             tenant: Some(ctx.tenant.clone()),
             team: ctx.team.clone(),
         };
-        let Some(binding) = self.resolve_capability(cap_id, None, scope) else {
+        let binding = if requested_op.is_empty() {
+            self.resolve_capability(cap_id, None, scope)
+        } else {
+            self.capability_registry
+                .resolve_for_op(cap_id, None, &scope, Some(requested_op))
+        };
+        let Some(binding) = binding else {
             return Ok(missing_capability_outcome(cap_id, op, None));
         };
         if !is_binding_ready(
@@ -380,15 +425,27 @@ impl DemoRunnerHost {
             ));
         };
 
-        let target_op = if op.trim().is_empty() {
+        let target_op = if cap_id == CAP_OAUTH_BROKER_V1 || requested_op.is_empty() {
+            // OAuth broker cap.invoke always routes through the selected provider op.
             binding.provider_op.as_str()
         } else {
-            op
+            requested_op
         };
 
         // Capability invocations go through the same operator pipeline.
         let mut envelope =
             OperationEnvelope::new(&format!("cap.invoke:{cap_id}"), payload_bytes, ctx);
+        let token_validation_outcome =
+            self.evaluate_token_validation_pre_hook(&mut envelope, payload_bytes, ctx)?;
+        if let HookChainOutcome::Denied(reason) = token_validation_outcome {
+            envelope.status = OperationStatus::Denied;
+            self.emit_post_sub(&envelope);
+            return Ok(capability_route_error_outcome(
+                cap_id,
+                target_op,
+                format!("operation denied by pre-hook: {reason}"),
+            ));
+        }
         let pre_chain = self.resolve_hook_chain(HookStage::Pre, &envelope.op_name);
         let pre_hook_outcome =
             self.evaluate_hook_chain(&pre_chain, HookStage::Pre, &mut envelope)?;
@@ -443,6 +500,20 @@ impl DemoRunnerHost {
         ctx: &OperatorContext,
     ) -> anyhow::Result<FlowOutcome> {
         let mut envelope = OperationEnvelope::new(op_id, payload_bytes, ctx);
+        let token_validation_outcome =
+            self.evaluate_token_validation_pre_hook(&mut envelope, payload_bytes, ctx)?;
+        if let HookChainOutcome::Denied(reason) = token_validation_outcome {
+            envelope.status = OperationStatus::Denied;
+            self.emit_pre_sub(&envelope);
+            self.emit_post_sub(&envelope);
+            return Ok(FlowOutcome {
+                success: false,
+                output: None,
+                raw: None,
+                error: Some(format!("operation denied by pre-hook: {reason}")),
+                mode: RunnerExecutionMode::Exec,
+            });
+        }
         let pre_chain = self.resolve_hook_chain(HookStage::Pre, op_id);
         let pre_hook_outcome =
             self.evaluate_hook_chain(&pre_chain, HookStage::Pre, &mut envelope)?;
@@ -513,9 +584,33 @@ impl DemoRunnerHost {
             let run_dir = state_layout::run_dir(&self.bundle_root, domain, &pack.pack_id, flow_id)?;
             std::fs::create_dir_all(&run_dir)?;
 
-            let render_outcome = self
-                .card_renderer
-                .render_if_needed(provider_type, payload_bytes)?;
+            let render_outcome = self.card_renderer.render_if_needed(
+                provider_type,
+                payload_bytes,
+                |cap_id, op, input| {
+                    let outcome = self.invoke_capability(cap_id, op, input, ctx)?;
+                    if !outcome.success {
+                        let reason = outcome
+                            .error
+                            .clone()
+                            .or(outcome.raw.clone())
+                            .unwrap_or_else(|| "capability invocation failed".to_string());
+                        return Err(anyhow!(
+                            "card capability {}:{} failed: {}",
+                            cap_id,
+                            op,
+                            reason
+                        ));
+                    }
+                    outcome.output.ok_or_else(|| {
+                        anyhow!(
+                            "card capability {}:{} returned no structured output",
+                            cap_id,
+                            op
+                        )
+                    })
+                },
+            )?;
             let payload = serde_json::from_slice(&render_outcome.bytes).unwrap_or_else(|_| {
                 json!({
                     "payload": general_purpose::STANDARD.encode(&render_outcome.bytes)
@@ -649,6 +744,77 @@ impl DemoRunnerHost {
         Ok(HookChainOutcome::Continue)
     }
 
+    fn evaluate_token_validation_pre_hook(
+        &self,
+        envelope: &mut OperationEnvelope,
+        payload_bytes: &[u8],
+        ctx: &OperatorContext,
+    ) -> anyhow::Result<HookChainOutcome> {
+        if envelope
+            .op_name
+            .starts_with(&format!("cap.invoke:{CAP_OAUTH_TOKEN_VALIDATION_V1}"))
+        {
+            return Ok(HookChainOutcome::Continue);
+        }
+        let Some(validation_request) = extract_token_validation_request(payload_bytes) else {
+            return Ok(HookChainOutcome::Continue);
+        };
+        let scope = ResolveScope {
+            env: env::var("GREENTIC_ENV").ok(),
+            tenant: Some(ctx.tenant.clone()),
+            team: ctx.team.clone(),
+        };
+        let Some(binding) = self.resolve_capability(CAP_OAUTH_TOKEN_VALIDATION_V1, None, scope)
+        else {
+            return Ok(HookChainOutcome::Continue);
+        };
+        if !is_binding_ready(
+            &self.bundle_root,
+            &ctx.tenant,
+            ctx.team.as_deref(),
+            &binding,
+        )? {
+            return Ok(HookChainOutcome::Denied(format!(
+                "token validation capability is not installed (stable_id={})",
+                binding.stable_id
+            )));
+        }
+        let Some(pack) = self.packs_by_path.get(&binding.pack_path) else {
+            return Ok(HookChainOutcome::Denied(format!(
+                "token validation pack not found at {}",
+                binding.pack_path.display()
+            )));
+        };
+        let request_bytes = serde_json::to_vec(&validation_request)
+            .map_err(|err| anyhow!("failed to encode token validation payload: {err}"))?;
+        let outcome = self.invoke_provider_component_op(
+            binding.domain,
+            pack,
+            &binding.pack_id,
+            &binding.provider_op,
+            &request_bytes,
+            ctx,
+        )?;
+        if !outcome.success {
+            let reason = outcome
+                .error
+                .unwrap_or_else(|| "token validation capability invocation failed".to_string());
+            return Ok(HookChainOutcome::Denied(reason));
+        }
+        let Some(output) = outcome.output else {
+            return Ok(HookChainOutcome::Denied(
+                "token validation returned no output".to_string(),
+            ));
+        };
+        match evaluate_token_validation_output(&output) {
+            TokenValidationDecision::Allow(claims) => {
+                envelope.ctx.auth_claims = claims;
+                Ok(HookChainOutcome::Continue)
+            }
+            TokenValidationDecision::Deny(reason) => Ok(HookChainOutcome::Denied(reason)),
+        }
+    }
+
     fn emit_pre_sub(&self, envelope: &OperationEnvelope) {
         operator_log::info(
             module_path!(),
@@ -767,13 +933,32 @@ impl DemoRunnerHost {
 
     fn invoke_provider_component_op(
         &self,
-        _domain: Domain,
+        domain: Domain,
         pack: &ProviderPack,
         provider_id: &str,
         op_id: &str,
         payload_bytes: &[u8],
         ctx: &OperatorContext,
     ) -> anyhow::Result<FlowOutcome> {
+        if let RunnerMode::Integration { binary, flavor } = &self.runner_mode {
+            let payload_value: JsonValue =
+                serde_json::from_slice(payload_bytes).unwrap_or_else(|_| json!({}));
+            let run_dir = state_layout::run_dir(&self.bundle_root, domain, &pack.pack_id, op_id)?;
+            std::fs::create_dir_all(&run_dir)?;
+            return self.execute_with_runner_integration(
+                domain,
+                pack,
+                op_id,
+                &payload_value,
+                ctx,
+                &run_dir,
+                binary,
+                *flavor,
+            );
+        }
+
+        let runtime = TokioRuntime::new()
+            .context("failed to create tokio runtime for provider invocation")?;
         let payload = payload_bytes.to_vec();
         let result = make_runtime_or_thread_scope(|runtime| {
             runtime.block_on(async {
@@ -1178,6 +1363,258 @@ fn payload_preview(bytes: &[u8]) -> String {
             encoded
         } else {
             format!("{encoded}...")
+        }
+    }
+}
+
+fn extract_token_validation_request(payload_bytes: &[u8]) -> Option<JsonValue> {
+    let payload: JsonValue = serde_json::from_slice(payload_bytes).ok()?;
+    let token = extract_bearer_token(&payload)?;
+    let mut request = serde_json::Map::new();
+    request.insert("token".to_string(), JsonValue::String(token));
+    if let Some(issuer) = first_string_at_paths(
+        &payload,
+        &["/token_validation/issuer", "/auth/issuer", "/issuer"],
+    ) {
+        request.insert("issuer".to_string(), JsonValue::String(issuer));
+    }
+    if let Some(audience) = first_value_at_paths(
+        &payload,
+        &["/token_validation/audience", "/auth/audience", "/audience"],
+    ) {
+        request.insert("audience".to_string(), normalize_string_or_array(audience));
+    }
+    if let Some(scopes) = first_value_at_paths(
+        &payload,
+        &[
+            "/token_validation/scopes",
+            "/token_validation/required_scopes",
+            "/auth/scopes",
+            "/auth/required_scopes",
+            "/scopes",
+        ],
+    ) {
+        request.insert("scopes".to_string(), normalize_string_or_array(scopes));
+    }
+    Some(JsonValue::Object(request))
+}
+
+fn extract_bearer_token(payload: &JsonValue) -> Option<String> {
+    if let Some(value) = first_string_at_paths(
+        payload,
+        &[
+            "/token_validation/token",
+            "/auth/token",
+            "/bearer_token",
+            "/token",
+            "/access_token",
+            "/authorization",
+        ],
+    ) && let Some(token) = parse_bearer_value(&value)
+    {
+        return Some(token);
+    }
+
+    if let Some(headers) = payload.get("headers")
+        && let Some(token) = extract_bearer_from_headers(headers)
+    {
+        return Some(token);
+    }
+
+    if let Some(value) = payload
+        .pointer("/metadata/authorization")
+        .and_then(JsonValue::as_str)
+        && let Some(token) = parse_bearer_value(value)
+    {
+        return Some(token);
+    }
+
+    None
+}
+
+fn extract_bearer_from_headers(headers: &JsonValue) -> Option<String> {
+    match headers {
+        JsonValue::Object(map) => {
+            for key in ["authorization", "Authorization"] {
+                if let Some(value) = map.get(key).and_then(JsonValue::as_str)
+                    && let Some(token) = parse_bearer_value(value)
+                {
+                    return Some(token);
+                }
+            }
+            None
+        }
+        JsonValue::Array(values) => values.iter().find_map(|entry| {
+            let name = entry
+                .get("name")
+                .or_else(|| entry.get("key"))
+                .and_then(JsonValue::as_str)?;
+            if !name.eq_ignore_ascii_case("authorization") {
+                return None;
+            }
+            let value = entry.get("value").and_then(JsonValue::as_str)?;
+            parse_bearer_value(value)
+        }),
+        _ => None,
+    }
+}
+
+fn parse_bearer_value(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("Bearer ") {
+        let token = rest.trim();
+        if token.is_empty() {
+            None
+        } else {
+            Some(token.to_string())
+        }
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn first_string_at_paths(payload: &JsonValue, paths: &[&str]) -> Option<String> {
+    paths
+        .iter()
+        .find_map(|path| payload.pointer(path).and_then(JsonValue::as_str))
+        .map(str::to_string)
+}
+
+fn first_value_at_paths<'a>(payload: &'a JsonValue, paths: &[&str]) -> Option<&'a JsonValue> {
+    paths.iter().find_map(|path| payload.pointer(path))
+}
+
+fn normalize_string_or_array(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::String(raw) => {
+            let values = raw
+                .split_whitespace()
+                .filter(|entry| !entry.trim().is_empty())
+                .map(|entry| JsonValue::String(entry.to_string()))
+                .collect::<Vec<_>>();
+            JsonValue::Array(values)
+        }
+        JsonValue::Array(items) => JsonValue::Array(
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(|item| JsonValue::String(item.to_string()))
+                .collect(),
+        ),
+        _ => JsonValue::Array(Vec::new()),
+    }
+}
+
+enum TokenValidationDecision {
+    Allow(Option<JsonValue>),
+    Deny(String),
+}
+
+fn evaluate_token_validation_output(output: &JsonValue) -> TokenValidationDecision {
+    let valid = output
+        .get("valid")
+        .and_then(JsonValue::as_bool)
+        .or_else(|| output.get("ok").and_then(JsonValue::as_bool))
+        .unwrap_or(false);
+    if !valid {
+        let reason = output
+            .get("reason")
+            .and_then(JsonValue::as_str)
+            .or_else(|| output.get("error").and_then(JsonValue::as_str))
+            .unwrap_or("invalid bearer token");
+        return TokenValidationDecision::Deny(reason.to_string());
+    }
+    let claims = output
+        .get("claims")
+        .filter(|value| value.is_object())
+        .cloned()
+        .or_else(|| {
+            output
+                .as_object()
+                .is_some_and(|map| map.contains_key("sub"))
+                .then(|| output.clone())
+        });
+    TokenValidationDecision::Allow(claims)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn token_validation_request_extracts_bearer_and_requirements() {
+        let payload = json!({
+            "headers": {
+                "Authorization": "Bearer token-123"
+            },
+            "token_validation": {
+                "issuer": "https://issuer.example",
+                "audience": ["api://svc"],
+                "required_scopes": "read write"
+            }
+        });
+        let request =
+            extract_token_validation_request(&serde_json::to_vec(&payload).expect("payload bytes"))
+                .expect("request");
+        assert_eq!(
+            request.pointer("/token").and_then(JsonValue::as_str),
+            Some("token-123")
+        );
+        assert_eq!(
+            request.pointer("/issuer").and_then(JsonValue::as_str),
+            Some("https://issuer.example")
+        );
+        assert_eq!(
+            request.pointer("/audience/0").and_then(JsonValue::as_str),
+            Some("api://svc")
+        );
+        assert_eq!(
+            request.pointer("/scopes/0").and_then(JsonValue::as_str),
+            Some("read")
+        );
+        assert_eq!(
+            request.pointer("/scopes/1").and_then(JsonValue::as_str),
+            Some("write")
+        );
+    }
+
+    #[test]
+    fn token_validation_output_deny_when_invalid() {
+        let output = json!({
+            "valid": false,
+            "reason": "issuer mismatch"
+        });
+        match evaluate_token_validation_output(&output) {
+            TokenValidationDecision::Deny(reason) => {
+                assert_eq!(reason, "issuer mismatch");
+            }
+            TokenValidationDecision::Allow(_) => panic!("expected deny"),
+        }
+    }
+
+    #[test]
+    fn token_validation_output_allows_and_returns_claims() {
+        let output = json!({
+            "valid": true,
+            "claims": {
+                "sub": "user-1",
+                "scope": "read write",
+                "aud": ["api://svc"]
+            }
+        });
+        match evaluate_token_validation_output(&output) {
+            TokenValidationDecision::Allow(Some(claims)) => {
+                assert_eq!(
+                    claims.pointer("/sub").and_then(JsonValue::as_str),
+                    Some("user-1")
+                );
+            }
+            TokenValidationDecision::Allow(None) => panic!("expected claims"),
+            TokenValidationDecision::Deny(reason) => panic!("unexpected deny: {reason}"),
         }
     }
 }

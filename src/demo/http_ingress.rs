@@ -723,6 +723,7 @@ fn parse_domain(value: &str) -> Option<Domain> {
         "messaging" => Some(Domain::Messaging),
         "events" => Some(Domain::Events),
         "secrets" => Some(Domain::Secrets),
+        "oauth" => Some(Domain::OAuth),
         _ => None,
     }
 }

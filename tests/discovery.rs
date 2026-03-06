@@ -50,18 +50,23 @@ fn discovery_detects_domains_and_manifest_ids() {
     let providers = root.join("providers");
     let messaging = providers.join("messaging");
     let events = providers.join("events");
+    let oauth = providers.join("oauth");
     std::fs::create_dir_all(&messaging).unwrap();
     std::fs::create_dir_all(&events).unwrap();
+    std::fs::create_dir_all(&oauth).unwrap();
 
     write_pack(&messaging.join("alpha.gtpack"), "messaging-alpha").unwrap();
     write_pack(&events.join("beta.gtpack"), "events-beta").unwrap();
+    write_pack(&oauth.join("gamma.gtpack"), "oauth-gamma").unwrap();
 
     let result = discovery::discover(root).unwrap();
     assert!(result.domains.messaging);
     assert!(result.domains.events);
-    assert_eq!(result.providers.len(), 2);
+    assert!(result.domains.oauth);
+    assert_eq!(result.providers.len(), 3);
     assert_eq!(result.providers[0].id_source, ProviderIdSource::Manifest);
     assert_eq!(result.providers[1].id_source, ProviderIdSource::Manifest);
+    assert_eq!(result.providers[2].id_source, ProviderIdSource::Manifest);
 }
 
 #[test]
@@ -76,6 +81,7 @@ fn discovery_falls_back_to_filename() {
     let result = discovery::discover(root).unwrap();
     assert!(!result.domains.messaging);
     assert!(result.domains.events);
+    assert!(!result.domains.oauth);
     assert_eq!(result.providers.len(), 1);
     assert_eq!(result.providers[0].provider_id, "filename");
     assert_eq!(result.providers[0].id_source, ProviderIdSource::Filename);
@@ -98,6 +104,7 @@ fn discovery_persists_outputs() {
     let domains: serde_json::Value = serde_json::from_str(&domains).unwrap();
     let providers: serde_json::Value = serde_json::from_str(&providers).unwrap();
     assert_eq!(domains["messaging"], true);
+    assert_eq!(domains["oauth"], false);
     assert_eq!(providers.as_array().unwrap().len(), 1);
 }
 
