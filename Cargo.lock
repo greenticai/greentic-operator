@@ -1847,7 +1847,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-operator"
-version = "0.4.36"
+version = "0.4.37"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1897,9 +1897,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-pack-lib"
-version = "0.4.105"
+version = "0.4.108"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37af4e55aa8c3461563f76a3fc7afa3c8b31ed41020655fa692eed16867e8d46"
+checksum = "fd1fdccb5195a30c70a07cf04060a00d49d97afa1bc6c6112d3ae689de5338d8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1951,7 +1951,7 @@ dependencies = [
  "greentic-pack-lib",
  "greentic-runner-host",
  "parking_lot",
- "runner-core 0.4.62 (registry+https://github.com/rust-lang/crates.io-index)",
+ "runner-core 0.4.62",
  "serde",
  "serde_json",
  "serde_yaml_gtc",
@@ -1964,7 +1964,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-host"
-version = "0.4.62"
+version = "0.4.63"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2002,7 +2002,7 @@ dependencies = [
  "parking_lot",
  "rand 0.10.0",
  "reqwest 0.13.2",
- "runner-core 0.4.62",
+ "runner-core 0.4.63",
  "serde",
  "serde_cbor",
  "serde_json",
@@ -4118,6 +4118,8 @@ dependencies = [
 [[package]]
 name = "runner-core"
 version = "0.4.62"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5306cc7215bf570092db736cd00ff0b8ffff95ffc84f85ec7e44a23e88784d56"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4136,9 +4138,7 @@ dependencies = [
 
 [[package]]
 name = "runner-core"
-version = "0.4.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5306cc7215bf570092db736cd00ff0b8ffff95ffc84f85ec7e44a23e88784d56"
+version = "0.4.63"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
