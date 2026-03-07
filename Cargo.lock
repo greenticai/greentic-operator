@@ -1775,6 +1775,10 @@ dependencies = [
 [[package]]
 name = "greentic-i18n"
 version = "0.4.56"
+
+[[package]]
+name = "greentic-i18n"
+version = "0.4.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44951881c763069e14624cf8cf1dddff706ad4d8132570dc299af0b855cf4458"
 
@@ -1852,7 +1856,7 @@ dependencies = [
  "clap",
  "directories-next",
  "greentic-distributor-client",
- "greentic-i18n",
+ "greentic-i18n 0.4.56 (registry+https://github.com/rust-lang/crates.io-index)",
  "greentic-interfaces",
  "greentic-interfaces-guest",
  "greentic-interfaces-host",
@@ -1947,7 +1951,7 @@ dependencies = [
  "greentic-pack-lib",
  "greentic-runner-host",
  "parking_lot",
- "runner-core",
+ "runner-core 0.4.62 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "serde_yaml_gtc",
@@ -1961,8 +1965,6 @@ dependencies = [
 [[package]]
 name = "greentic-runner-host"
 version = "0.4.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7b02c96236b4e5a2338d2c691d5b9bce420e87d29ccef9e58eedfa5332a46a6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1979,7 +1981,7 @@ dependencies = [
  "greentic-config-types",
  "greentic-distributor-client",
  "greentic-flow",
- "greentic-i18n",
+ "greentic-i18n 0.4.56",
  "greentic-interfaces",
  "greentic-interfaces-host",
  "greentic-interfaces-wasmtime",
@@ -2000,7 +2002,7 @@ dependencies = [
  "parking_lot",
  "rand 0.10.0",
  "reqwest 0.13.2",
- "runner-core",
+ "runner-core 0.4.62",
  "serde",
  "serde_cbor",
  "serde_json",
@@ -4111,6 +4113,25 @@ checksum = "a7cc970b249fbe527d6e02e0a227762c9108b2f49d81094fe357ffc6d14d7f6f"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "runner-core"
+version = "0.4.62"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "blake3",
+ "ed25519-dalek",
+ "greentic-config-types",
+ "greentic-pack-lib",
+ "reqwest 0.13.2",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "url",
 ]
 
 [[package]]

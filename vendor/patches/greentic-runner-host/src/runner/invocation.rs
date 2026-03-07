@@ -83,10 +83,26 @@ impl InvocationPayload {
             if let Some(envelope) = map.remove("envelope") {
                 return Self::from_envelope(envelope);
             }
-            let op = extract_string(map.remove("op"));
-            let payload = map.remove("payload").unwrap_or(Value::Null);
-            let metadata = map.remove("metadata").unwrap_or(Value::Null);
+            // Accept both canonical keys (`op`, `payload`, `metadata`) and
+            // compatibility aliases used by older flow payloads (`operation`,
+            // `input`, `config`) without dropping sibling fields such as `tool`.
+            let op = extract_string(map.remove("op").or_else(|| map.remove("operation")));
+            let payload = map
+                .remove("payload")
+                .or_else(|| map.remove("input"))
+                .unwrap_or(Value::Null);
+            let metadata = map
+                .remove("metadata")
+                .or_else(|| map.remove("config"))
+                .unwrap_or(Value::Null);
             if op.is_some() || !payload.is_null() || !metadata.is_null() {
+                if payload.is_null() && !map.is_empty() {
+                    return Self {
+                        op,
+                        payload: Value::Object(map),
+                        metadata,
+                    };
+                }
                 return Self {
                     op,
                     payload,

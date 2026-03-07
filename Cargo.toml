@@ -105,3 +105,4 @@ greentic-interfaces = { path = "vendor/patches/greentic-interfaces" }
 greentic-interfaces-guest = { path = "vendor/patches/greentic-interfaces-guest" }
 greentic-interfaces-host = { path = "vendor/patches/greentic-interfaces-host" }
 greentic-interfaces-wasmtime = { path = "vendor/patches/greentic-interfaces-wasmtime" }
+greentic-runner-host = { path = "../greentic-runner/crates/greentic-runner-host" }
