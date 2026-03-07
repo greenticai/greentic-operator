@@ -1843,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-operator"
-version = "0.4.37"
+version = "0.4.38"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1960,7 +1960,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-host"
-version = "0.4.60"
+version = "0.4.63"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fea899b52eb147253c267543bb9048fc010d51362332eea8c8a90c0abc14a2e"
 dependencies = [
  "anyhow",
  "arc-swap",

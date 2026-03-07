@@ -1,6 +1,6 @@
 [package]
 name = "greentic-operator"
-version = "0.4.37"
+version = "0.4.38"
 edition = "2024"
 rust-version = "1.91"
 description = "Greentic operator CLI for local dev and demo orchestration."
@@ -105,4 +105,3 @@ greentic-interfaces = { path = "vendor/patches/greentic-interfaces" }
 greentic-interfaces-guest = { path = "vendor/patches/greentic-interfaces-guest" }
 greentic-interfaces-host = { path = "vendor/patches/greentic-interfaces-host" }
 greentic-interfaces-wasmtime = { path = "vendor/patches/greentic-interfaces-wasmtime" }
-greentic-runner-host = { path = "vendor/patches/greentic-runner-host" }
