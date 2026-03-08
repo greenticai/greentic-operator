@@ -10,11 +10,11 @@ use super::api::{OnboardResult, OnboardState, error_response, into_error, json_o
 ///
 /// Lists available provider packs across all domains.
 pub fn list_providers(state: &OnboardState) -> OnboardResult {
-    let bundle_root = state.runner_host.bundle_root();
+    let bundle_root = state.runner_host.bundle_read_root();
     let mut providers = Vec::new();
 
     for domain in [Domain::Messaging, Domain::Events] {
-        let packs = domains::discover_provider_packs(bundle_root, domain).map_err(|err| {
+        let packs = domains::discover_provider_packs(&bundle_root, domain).map_err(|err| {
             operator_log::error(
                 module_path!(),
                 format!("[onboard] discover packs domain={:?}: {err}", domain),
@@ -191,6 +191,7 @@ pub fn deployment_status(state: &OnboardState) -> OnboardResult {
     json_ok(json!({
         "deployed": deployed,
         "gmap_raw": gmap_entries,
+        "runtime": state.runner_host.runtime_status_snapshot(),
     }))
 }
 

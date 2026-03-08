@@ -1,5 +1,9 @@
 use anyhow::Result;
 use greentic_operator::demo::{DemoBlockedOn, DemoRunner, UserEvent};
+use greentic_operator::runtime_core::{
+    RuntimeHealth, RuntimeHealthStatus, ScopedStateKey, SessionKey, SessionProvider, SessionRecord,
+    StateProvider,
+};
 use greentic_runner_host::secrets::default_manager;
 use greentic_types::flow::{ComponentRef as FlowComponentRef, FlowHasher};
 use greentic_types::{
@@ -10,6 +14,7 @@ use greentic_types::{
 use indexmap::IndexMap;
 use semver::Version;
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -18,6 +23,66 @@ use std::{
 };
 use tempfile::tempdir;
 use zip::{ZipWriter, write::FileOptions};
+
+struct RecordingSessionProvider {
+    puts: Arc<Mutex<usize>>,
+}
+
+#[async_trait::async_trait]
+impl SessionProvider for RecordingSessionProvider {
+    async fn get(&self, _key: &SessionKey) -> anyhow::Result<Option<SessionRecord>> {
+        Ok(None)
+    }
+
+    async fn put(&self, _key: &SessionKey, _record: SessionRecord) -> anyhow::Result<()> {
+        *self.puts.lock().expect("session puts lock poisoned") += 1;
+        Ok(())
+    }
+
+    async fn compare_and_set(
+        &self,
+        _key: &SessionKey,
+        _expected_revision: u64,
+        _record: SessionRecord,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    async fn delete(&self, _key: &SessionKey) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn health(&self) -> anyhow::Result<RuntimeHealth> {
+        Ok(RuntimeHealth {
+            status: RuntimeHealthStatus::Available,
+            reason: None,
+        })
+    }
+}
+
+struct RecordingStateProvider;
+
+#[async_trait::async_trait]
+impl StateProvider for RecordingStateProvider {
+    async fn get(&self, _key: &ScopedStateKey) -> anyhow::Result<Option<Value>> {
+        Ok(None)
+    }
+
+    async fn put(&self, _key: &ScopedStateKey, _value: Value) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn delete(&self, _key: &ScopedStateKey) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn health(&self) -> anyhow::Result<RuntimeHealth> {
+        Ok(RuntimeHealth {
+            status: RuntimeHealthStatus::Available,
+            reason: None,
+        })
+    }
+}
 
 #[test]
 fn demo_runner_blocks_and_completes_flow() -> Result<()> {
@@ -50,6 +115,32 @@ fn demo_runner_blocks_and_completes_flow() -> Result<()> {
     } else {
         panic!("expected finished state, got {completion:?}");
     }
+
+    Ok(())
+}
+
+#[test]
+fn demo_runner_routes_session_state_through_provider_contracts() -> Result<()> {
+    let bundle = tempdir()?;
+    let pack_path = create_blocking_pack(bundle.path(), "demo-blocking")?;
+    let secrets = default_manager()?;
+    let mut runner = DemoRunner::with_entry_flow_and_providers(
+        pack_path.clone(),
+        "demo",
+        Some("default".to_string()),
+        ("demo.wait".to_string(), "demo-blocking".to_string()),
+        json!({"trigger": "start"}),
+        (
+            Arc::new(RecordingSessionProvider {
+                puts: Arc::new(Mutex::new(0usize)),
+            }),
+            Arc::new(RecordingStateProvider),
+        ),
+        secrets,
+    )?;
+
+    let wait_state = runner.run_until_blocked();
+    assert!(matches!(wait_state, DemoBlockedOn::Waiting { .. }));
 
     Ok(())
 }

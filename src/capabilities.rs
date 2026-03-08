@@ -152,6 +152,13 @@ impl CapabilityRegistry {
             .unwrap_or_default()
     }
 
+    pub fn all_offers(&self) -> Vec<&CapabilityOfferRecord> {
+        self.by_cap_id
+            .values()
+            .flat_map(|offers| offers.iter())
+            .collect()
+    }
+
     pub fn resolve(
         &self,
         cap_id: &str,
@@ -278,6 +285,20 @@ impl CapabilityInstallRecord {
             config_state_keys: vec![key.to_string()],
             timestamp_unix_sec: now_unix_sec(),
         }
+    }
+}
+
+impl CapabilityOfferRecord {
+    pub fn envs(&self) -> &[String] {
+        &self.scope.envs
+    }
+
+    pub fn tenants(&self) -> &[String] {
+        &self.scope.tenants
+    }
+
+    pub fn teams(&self) -> &[String] {
+        &self.scope.teams
     }
 }
 

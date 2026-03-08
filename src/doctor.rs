@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::bundle_access::{BundleAccessHandle, operator_bundle_access_config};
 use crate::domains::{self, Domain};
 
 #[derive(Clone, Debug)]
@@ -28,6 +29,8 @@ pub fn run_doctor(
     options: DoctorOptions,
     pack_command: &Path,
 ) -> anyhow::Result<Vec<DoctorRun>> {
+    let bundle_access = BundleAccessHandle::open(root, &operator_bundle_access_config(root))?;
+    let bundle_read_root = bundle_access.active_root();
     let base_dir = doctor_root(root)?;
     std::fs::create_dir_all(&base_dir)?;
 
@@ -44,11 +47,11 @@ pub fn run_doctor(
     let mut runs = Vec::new();
 
     for domain in domains {
-        let provider_packs = domains::discover_provider_packs(root, domain)?;
+        let provider_packs = domains::discover_provider_packs(bundle_read_root, domain)?;
         let validators = if !options.validator_packs.is_empty() {
             options.validator_packs.clone()
         } else {
-            domains::validator_pack_path(root, domain)
+            domains::validator_pack_path(bundle_read_root, domain)
                 .map(|path| vec![path])
                 .unwrap_or_default()
         };
@@ -68,7 +71,7 @@ pub fn run_doctor(
         }
     }
 
-    if let Some(selection) = demo_packs(root, &options)? {
+    if let Some(selection) = demo_packs_with_roots(root, bundle_read_root, &options)? {
         for pack in selection.packs {
             let run = run_doctor_for_pack(
                 root,
@@ -169,7 +172,11 @@ struct DemoPackSelection {
     team: Option<String>,
 }
 
-fn demo_packs(root: &Path, options: &DoctorOptions) -> anyhow::Result<Option<DemoPackSelection>> {
+fn demo_packs_with_roots(
+    root: &Path,
+    bundle_read_root: &Path,
+    options: &DoctorOptions,
+) -> anyhow::Result<Option<DemoPackSelection>> {
     let Some(tenant) = options.tenant.clone() else {
         return Ok(None);
     };
@@ -182,7 +189,12 @@ fn demo_packs(root: &Path, options: &DoctorOptions) -> anyhow::Result<Option<Dem
     let mut packs = Vec::new();
     for pack in manifest.packs {
         if pack.ends_with(".gtpack") {
-            packs.push(root.join(pack));
+            let pack_path = Path::new(&pack);
+            if pack_path.is_absolute() {
+                packs.push(pack_path.to_path_buf());
+            } else {
+                packs.push(bundle_read_root.join(pack_path));
+            }
         } else {
             eprintln!("Warning: skipping non-gtpack demo pack {}", pack);
         }
@@ -231,4 +243,27 @@ fn domain_name(domain: Domain) -> &'static str {
 #[derive(Debug, serde::Deserialize)]
 struct ResolvedManifest {
     packs: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::bundle_access::operator_bundle_access_config;
+
+    #[test]
+    fn doctor_bundle_access_config_uses_bundle_state_for_directory_bundles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = operator_bundle_access_config(tmp.path());
+        assert_eq!(
+            config.runtime_dir,
+            tmp.path().join("state").join("runtime").join("bundle_fs")
+        );
+    }
+
+    #[test]
+    fn doctor_bundle_access_config_uses_temp_root_for_image_bundles() {
+        let sqsh = std::path::Path::new("/tmp/demo-bundle.sqsh");
+        let config = operator_bundle_access_config(sqsh);
+        assert!(config.runtime_dir.starts_with(std::env::temp_dir()));
+        assert!(config.runtime_dir.ends_with("bundle_fs"));
+    }
 }

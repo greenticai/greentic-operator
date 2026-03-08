@@ -1849,7 +1849,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-operator"
-version = "0.4.36"
+version = "0.4.37"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1867,6 +1867,8 @@ dependencies = [
  "greentic-runner-desktop",
  "greentic-runner-host",
  "greentic-secrets-lib",
+ "greentic-session",
+ "greentic-state",
  "greentic-types",
  "http-body-util",
  "hyper",
@@ -1885,6 +1887,7 @@ dependencies = [
  "serde_cbor",
  "serde_json",
  "serde_yaml_gtc",
+ "sha2",
  "sys-locale",
  "sysinfo",
  "tempfile",
@@ -1899,9 +1902,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-pack-lib"
-version = "0.4.105"
+version = "0.4.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37af4e55aa8c3461563f76a3fc7afa3c8b31ed41020655fa692eed16867e8d46"
+checksum = "b8e0704282d04ae65732a933f2cd96dc057df1d8b684bd23a12e7fa170d53135"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3071,9 +3074,9 @@ dependencies = [
 
 [[package]]
 name = "ntapi"
-version = "0.4.3"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
+checksum = "c70f219e21142367c70c0b30c6a9e3a14d55b4d12a204d897fbec83a0363f081"
 dependencies = [
  "winapi",
 ]
@@ -3189,18 +3192,18 @@ dependencies = [
 
 [[package]]
 name = "objc2-core-foundation"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c10c2894a6fed806ade6027bcd50662746363a9589d3ec9d9bef30a4e4bc166"
+checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
  "bitflags",
 ]
 
 [[package]]
 name = "objc2-io-kit"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71c1c64d6120e51cd86033f67176b1cb66780c2efe34dec55176f77befd93c0a"
+checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
 dependencies = [
  "libc",
  "objc2-core-foundation",
@@ -4744,9 +4747,9 @@ dependencies = [
 
 [[package]]
 name = "sysinfo"
-version = "0.38.3"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d03c61d2a49c649a15c407338afe7accafde9dac869995dccb73e5f7ef7d9034"
+checksum = "fe840c5b1afe259a5657392a4dbb74473a14c8db999c3ec2f4ae812e028a94da"
 dependencies = [
  "libc",
  "memchr",

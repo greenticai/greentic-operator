@@ -5,7 +5,7 @@ use anyhow::Context;
 use serde_json::{Value as JsonValue, json};
 
 use crate::demo::runner_host::{DemoRunnerHost, OperatorContext};
-use crate::discovery::{self, DiscoveryOptions};
+use crate::discovery;
 use crate::domains::{Domain, ProviderPack};
 use crate::secrets_gate;
 use greentic_types::cbor::canonical;
@@ -104,14 +104,12 @@ pub fn apply_answers_via_component_qa(
         return Ok(None);
     }
 
-    let cbor_only = root.join("greentic.demo.yaml").exists();
-    let discovery = discovery::discover_with_options(root, DiscoveryOptions { cbor_only })
-        .map_err(|err| {
-            diagnostic(
-                QaDiagnosticCode::QaSpecFailed,
-                format!("discover providers: {err}"),
-            )
-        })?;
+    let discovery = discovery::discover_bundle_auto(root).map_err(|err| {
+        diagnostic(
+            QaDiagnosticCode::QaSpecFailed,
+            format!("discover staged providers: {err}"),
+        )
+    })?;
     let secrets_handle =
         secrets_gate::resolve_secrets_manager(root, tenant, team).map_err(|err| {
             diagnostic(

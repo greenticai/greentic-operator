@@ -70,9 +70,23 @@ pub fn run_end_to_end(
     if envelopes.is_empty() {
         return Ok(());
     }
+    let bundle_state_root = bundle;
+    let discovery = crate::discovery::discover_bundle_with_options(
+        bundle,
+        crate::discovery::DiscoveryOptions { cbor_only: true },
+    )?;
+    let runner_host = DemoRunnerHost::new(
+        bundle.to_path_buf(),
+        &discovery,
+        runner_binary.clone(),
+        secrets_handle.clone(),
+        false,
+    )?;
+    let bundle_read_root = runner_host.bundle_read_root().to_path_buf();
     let team = ctx.team.as_deref();
-    let app_pack_path = app::resolve_app_pack_path(bundle, &ctx.tenant, team, app_pack.as_deref())
-        .context("failed to resolve app pack")?;
+    let app_pack_path =
+        app::resolve_app_pack_path(&bundle_read_root, &ctx.tenant, team, app_pack.as_deref())
+            .context("failed to resolve app pack")?;
     let pack_info =
         app::load_app_pack_info(&app_pack_path).context("failed to load app pack manifest")?;
     let flow = app::select_app_flow(&pack_info).context("unable to select default app flow")?;
@@ -94,7 +108,7 @@ pub fn run_end_to_end(
     let mut processed_envelopes = Vec::new();
     for envelope in envelopes {
         let mut outputs = app::run_app_flow(
-            bundle,
+            bundle_state_root,
             ctx,
             &app_pack_path,
             &pack_info.pack_id,
@@ -109,23 +123,12 @@ pub fn run_end_to_end(
         }
     }
     let envelopes = processed_envelopes;
-    let discovery = crate::discovery::discover_with_options(
-        bundle,
-        crate::discovery::DiscoveryOptions { cbor_only: true },
-    )?;
-    let runner_host = DemoRunnerHost::new(
-        bundle.to_path_buf(),
-        &discovery,
-        runner_binary,
-        secrets_handle.clone(),
-        false,
-    )?;
     let policy = RetryPolicy {
         max_attempts: retries.saturating_add(1).max(1),
         ..Default::default()
     };
     let runtime_paths = RuntimePaths::new(
-        bundle.join("state"),
+        bundle_state_root.join("state"),
         &ctx.tenant,
         ctx.team.clone().unwrap_or_else(|| "default".to_string()),
     );

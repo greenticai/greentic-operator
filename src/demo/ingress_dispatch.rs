@@ -7,8 +7,8 @@ use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use crate::demo::ingress_types::{
     EventEnvelopeV1, IngressDispatchResult, IngressHttpResponse, IngressRequestV1,
 };
-use crate::demo::runner_host::{DemoRunnerHost, OperatorContext};
-use crate::domains::Domain;
+use crate::demo::runner_host::{DemoRunnerHost, OperatorContext, PhaseEventSpec};
+use crate::domains::{self, Domain};
 use crate::hooks::runner::apply_post_ingress_hooks_dispatch;
 use crate::messaging_universal::ingress::build_ingress_request;
 use crate::operator_log;
@@ -19,7 +19,35 @@ pub fn dispatch_http_ingress(
     request: &IngressRequestV1,
     ctx: &OperatorContext,
 ) -> anyhow::Result<IngressDispatchResult> {
+    runner_host
+        .enforce_request_policy(
+            "http_ingress",
+            &[
+                "session",
+                "state",
+                "bundle_source",
+                "bundle_resolver",
+                "bundle_fs",
+            ],
+            1,
+        )
+        .map_err(|refusal| anyhow::anyhow!("runtime request refused: {}", refusal.message))?;
     let op = "ingest_http";
+    runner_host.publish_phase_event(PhaseEventSpec {
+        event_type: "ingress.received",
+        severity: "info",
+        outcome: Some("received"),
+        ctx,
+        pack_id: Some(request.provider.as_str()),
+        flow_id: Some(op),
+        payload: json!({
+            "domain": domains::domain_name(domain),
+            "provider": request.provider,
+            "handler": request.handler,
+            "method": request.method,
+            "path": request.path,
+        }),
+    });
     // Convert IngressRequestV1 to HttpInV1 (JSON) — the format providers expect.
     let http_in = build_ingress_request(
         &request.provider,
@@ -48,13 +76,29 @@ pub fn dispatch_http_ingress(
     let value = outcome.output.unwrap_or_else(|| json!({}));
     let mut decoded = parse_dispatch_result(&value).with_context(|| "decode ingest_http output")?;
     apply_post_ingress_hooks_dispatch(
-        runner_host.bundle_root(),
+        &runner_host.bundle_read_root(),
         runner_host,
         domain,
         request,
         &mut decoded,
         ctx,
     )?;
+    runner_host.publish_phase_event(PhaseEventSpec {
+        event_type: "ingress.routed",
+        severity: "info",
+        outcome: Some("routed"),
+        ctx,
+        pack_id: Some(request.provider.as_str()),
+        flow_id: Some(op),
+        payload: json!({
+            "domain": domains::domain_name(domain),
+            "provider": request.provider,
+            "handler": request.handler,
+            "response_status": decoded.response.status,
+            "event_count": decoded.events.len(),
+            "messaging_envelope_count": decoded.messaging_envelopes.len(),
+        }),
+    });
     Ok(decoded)
 }
 
@@ -208,4 +252,100 @@ pub fn log_invalid_event_warning(err: &anyhow::Error) {
         module_path!(),
         format!("ingress events decode warning: {err}"),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::demo::runner_host::DemoRunnerHost;
+    use crate::runtime_core::{
+        RuntimeCore, RuntimeHealth, RuntimeHealthStatus, ScopedStateKey, StateProvider,
+    };
+
+    struct DegradedStateProvider;
+
+    #[async_trait]
+    impl StateProvider for DegradedStateProvider {
+        async fn get(&self, _key: &ScopedStateKey) -> anyhow::Result<Option<JsonValue>> {
+            Ok(None)
+        }
+
+        async fn put(&self, _key: &ScopedStateKey, _value: JsonValue) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn delete(&self, _key: &ScopedStateKey) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn health(&self) -> anyhow::Result<RuntimeHealth> {
+            Ok(RuntimeHealth {
+                status: RuntimeHealthStatus::Degraded,
+                reason: Some("state provider latency high".to_string()),
+            })
+        }
+    }
+
+    #[test]
+    fn dispatch_http_ingress_refuses_when_safe_mode_blocks_mutating_requests() {
+        let tmp = tempdir().expect("tempdir");
+        let discovery = crate::discovery::DiscoveryResult {
+            domains: crate::discovery::DetectedDomains {
+                messaging: false,
+                events: false,
+                oauth: false,
+            },
+            providers: Vec::new(),
+        };
+        let secrets_handle =
+            crate::secrets_gate::resolve_secrets_manager(tmp.path(), "default", None)
+                .expect("resolve secrets manager");
+        let host = DemoRunnerHost::new(
+            tmp.path().to_path_buf(),
+            &discovery,
+            None,
+            secrets_handle,
+            false,
+        )
+        .expect("build host");
+
+        let current = host.runtime_core();
+        let mut seams = current.seams().clone();
+        seams.state_provider = Some(Arc::new(DegradedStateProvider));
+        host.replace_runtime_core_for_test(RuntimeCore::new(
+            current.registry().clone(),
+            seams,
+            current.wiring_plan().clone(),
+        ));
+
+        let request = IngressRequestV1 {
+            v: 1,
+            domain: "messaging".to_string(),
+            provider: "provider-a".to_string(),
+            handler: None,
+            tenant: "tenant-a".to_string(),
+            team: Some("default".to_string()),
+            method: "POST".to_string(),
+            path: "/v1/messaging/ingress/provider-a/tenant-a/default".to_string(),
+            query: Vec::new(),
+            headers: Vec::new(),
+            body: br#"{}"#.to_vec(),
+            correlation_id: Some("corr-safe-mode".to_string()),
+            remote_addr: None,
+        };
+        let ctx = OperatorContext {
+            tenant: "tenant-a".to_string(),
+            team: Some("default".to_string()),
+            correlation_id: Some("corr-safe-mode".to_string()),
+        };
+
+        let err = dispatch_http_ingress(&host, Domain::Messaging, &request, &ctx)
+            .expect_err("safe mode should refuse ingress execution");
+        assert!(err.to_string().contains("runtime request refused"));
+    }
 }

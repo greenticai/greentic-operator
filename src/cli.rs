@@ -19,6 +19,7 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use tokio::runtime::Runtime;
 
 use crate::bin_resolver::{self, ResolveCtx};
+use crate::bundle_access::{operator_bundle_cbor_only, with_operator_bundle_read_root};
 use crate::capabilities::ResolveScope;
 use crate::config;
 use crate::config_gate::{self, ConfigGateItem, ConfigValueSource};
@@ -28,7 +29,7 @@ use crate::demo::{
     http_ingress::{HttpIngressConfig, HttpIngressServer},
     input as demo_input, pack_resolve,
     runner_host::{DemoRunnerHost, FlowOutcome, OperatorContext, primary_provider_type},
-    setup::{ProvidersInput, discover_tenants},
+    setup::{ProvidersInput, discover_tenants_with_roots},
     timer_scheduler::{TimerScheduler, TimerSchedulerConfig, discover_timer_handlers},
 };
 use crate::dev_store_path;
@@ -1142,11 +1143,10 @@ impl DemoCapabilityCommand {
 
 impl DemoRunArgs {
     fn run(self, _ctx: &AppCtx) -> anyhow::Result<()> {
-        let packs_dir = self
-            .bundle
-            .clone()
-            .map(|bundle| bundle.join("packs"))
-            .unwrap_or(self.packs_dir);
+        let packs_dir = match self.bundle.as_ref() {
+            Some(bundle) => demo_bundle_packs_root(bundle)?,
+            None => self.packs_dir.clone(),
+        };
         let pack = pack_resolve::resolve_pack(&packs_dir, &self.pack)?;
         let pack_path = ensure_pack_within_root(&packs_dir, &pack.pack_path)?;
         let flow_id = pack.select_flow(self.flow.as_deref())?;
@@ -1248,85 +1248,87 @@ impl DemoListPacksArgs {
     fn run(self, _ctx: &AppCtx) -> anyhow::Result<()> {
         let domain = Domain::from(self.domain);
         let cfg = domains::config(domain);
-        let packs = demo_provider_packs(&self.bundle, domain)?;
-        let providers_root = self.bundle.join(cfg.providers_dir);
-        let apps_root = self.bundle.join("packs");
-        let mut provider_packs = Vec::new();
-        let mut app_packs = Vec::new();
-        for pack in packs {
-            if pack.path.starts_with(&providers_root) {
-                provider_packs.push(pack);
-            } else if pack.path.starts_with(&apps_root) {
-                app_packs.push(pack);
-            } else {
-                provider_packs.push(pack);
-            }
-        }
-
-        if provider_packs.is_empty() {
-            println!(
-                "{}",
-                operator_i18n::trf(
-                    "cli.list_packs.none_for_domain",
-                    "no packs found for domain {}",
-                    &[domains::domain_name(domain)]
-                )
-            );
-        } else {
-            println!(
-                "{}",
-                operator_i18n::trf(
-                    "cli.list_packs.for_domain",
-                    "packs for {}:",
-                    &[domains::domain_name(domain)]
-                )
-            );
-            for pack in &provider_packs {
-                println!(
-                    "  {} ({} entry flows) {}",
-                    pack.pack_id,
-                    pack.entry_flows.len(),
-                    pack.file_name
-                );
-            }
-        }
-
-        if !app_packs.is_empty() {
-            if !provider_packs.is_empty() {
-                println!();
-            }
-            println!(
-                "{}",
-                operator_i18n::tr("cli.list_packs.for_applications", "packs for applications:")
-            );
-            for pack in app_packs {
-                let relative = pack
-                    .path
-                    .strip_prefix(&apps_root)
-                    .unwrap_or_else(|_| Path::new(&pack.file_name));
-                let mut trimmed = relative.to_string_lossy().to_string();
-                if let Some(stripped) = trimmed.strip_suffix(".gtpack") {
-                    trimmed = stripped.to_string();
-                }
-                let has_parent = relative
-                    .parent()
-                    .map(|parent| !parent.as_os_str().is_empty())
-                    .unwrap_or(false);
-                let display_name = if has_parent {
-                    format!("/{trimmed}")
+        let apps_root = demo_bundle_packs_root(&self.bundle)?;
+        with_demo_bundle_read_root(&self.bundle, |bundle_read_root| {
+            let packs = demo_provider_packs(&self.bundle, domain)?;
+            let providers_root = bundle_read_root.join(cfg.providers_dir);
+            let mut provider_packs = Vec::new();
+            let mut app_packs = Vec::new();
+            for pack in packs {
+                if pack.path.starts_with(&providers_root) {
+                    provider_packs.push(pack);
+                } else if pack.path.starts_with(&apps_root) {
+                    app_packs.push(pack);
                 } else {
-                    trimmed
-                };
-                let depth = relative.components().count().saturating_sub(1);
-                let indent = " ".repeat(depth);
-                println!(
-                    "  {indent}{display_name} ({} entry flows) {}",
-                    pack.entry_flows.len(),
-                    pack.file_name
-                );
+                    provider_packs.push(pack);
+                }
             }
-        }
-        Ok(())
+
+            if provider_packs.is_empty() {
+                println!(
+                    "{}",
+                    operator_i18n::trf(
+                        "cli.list_packs.none_for_domain",
+                        "no packs found for domain {}",
+                        &[domains::domain_name(domain)]
+                    )
+                );
+            } else {
+                println!(
+                    "{}",
+                    operator_i18n::trf(
+                        "cli.list_packs.for_domain",
+                        "packs for {}:",
+                        &[domains::domain_name(domain)]
+                    )
+                );
+                for pack in &provider_packs {
+                    println!(
+                        "  {} ({} entry flows) {}",
+                        pack.pack_id,
+                        pack.entry_flows.len(),
+                        pack.file_name
+                    );
+                }
+            }
+
+            if !app_packs.is_empty() {
+                if !provider_packs.is_empty() {
+                    println!();
+                }
+                println!(
+                    "{}",
+                    operator_i18n::tr("cli.list_packs.for_applications", "packs for applications:")
+                );
+                for pack in app_packs {
+                    let relative = pack
+                        .path
+                        .strip_prefix(&apps_root)
+                        .unwrap_or_else(|_| Path::new(&pack.file_name));
+                    let mut trimmed = relative.to_string_lossy().to_string();
+                    if let Some(stripped) = trimmed.strip_suffix(".gtpack") {
+                        trimmed = stripped.to_string();
+                    }
+                    let has_parent = relative
+                        .parent()
+                        .map(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(false);
+                    let display_name = if has_parent {
+                        format!("/{trimmed}")
+                    } else {
+                        trimmed
+                    };
+                    let depth = relative.components().count().saturating_sub(1);
+                    let indent = " ".repeat(depth);
+                    println!(
+                        "  {indent}{display_name} ({} entry flows) {}",
+                        pack.entry_flows.len(),
+                        pack.file_name
+                    );
+                }
+            }
+            Ok(())
+        })
     }
 }
 
@@ -1374,7 +1376,6 @@ impl DemoSubscriptionsEnsureArgs {
             Some(team)
         };
 
-        domains::ensure_cbor_packs(&bundle)?;
         let pack = resolve_demo_provider_pack(
             &bundle,
             &tenant,
@@ -1382,10 +1383,7 @@ impl DemoSubscriptionsEnsureArgs {
             &provider,
             Domain::Messaging,
         )?;
-        let discovery = discovery::discover_with_options(
-            &bundle,
-            discovery::DiscoveryOptions { cbor_only: true },
-        )?;
+        let discovery = discover_validated_demo_bundle_cbor_only(&bundle)?;
         let provider_map = discovery_map(&discovery.providers);
         let provider_id = provider_id_for_pack(&pack.path, &pack.pack_id, Some(&provider_map));
 
@@ -1403,6 +1401,19 @@ impl DemoSubscriptionsEnsureArgs {
             team: team_override.clone(),
             correlation_id: None,
         };
+        runner_host
+            .enforce_request_policy(
+                "subscriptions.ensure",
+                &[
+                    "session",
+                    "state",
+                    "bundle_source",
+                    "bundle_resolver",
+                    "bundle_fs",
+                ],
+                1,
+            )
+            .map_err(|refusal| anyhow::anyhow!(refusal.message))?;
         let service = SubscriptionService::new(runner_host, context);
 
         let binding_id = binding_id.unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -1627,11 +1638,7 @@ impl DemoCapabilityInvokeArgs {
                 env::set_var("GREENTIC_ENV", env_value);
             }
         }
-        domains::ensure_cbor_packs(&self.bundle)?;
-        let discovery = discovery::discover_with_options(
-            &self.bundle,
-            discovery::DiscoveryOptions { cbor_only: true },
-        )?;
+        let discovery = discover_validated_demo_bundle_cbor_only(&self.bundle)?;
         let secrets_handle =
             secrets_gate::resolve_secrets_manager(&self.bundle, &self.tenant, Some(&self.team))?;
         let runner_host =
@@ -1668,11 +1675,7 @@ impl DemoCapabilityInvokeArgs {
 
 impl DemoCapabilitySetupPlanArgs {
     fn run(self) -> anyhow::Result<()> {
-        domains::ensure_cbor_packs(&self.bundle)?;
-        let discovery = discovery::discover_with_options(
-            &self.bundle,
-            discovery::DiscoveryOptions { cbor_only: true },
-        )?;
+        let discovery = discover_validated_demo_bundle_cbor_only(&self.bundle)?;
         let secrets_handle =
             secrets_gate::resolve_secrets_manager(&self.bundle, &self.tenant, Some(&self.team))?;
         let runner_host =
@@ -1709,11 +1712,7 @@ impl DemoCapabilitySetupPlanArgs {
 
 impl DemoCapabilityMarkReadyArgs {
     fn run(self) -> anyhow::Result<()> {
-        domains::ensure_cbor_packs(&self.bundle)?;
-        let discovery = discovery::discover_with_options(
-            &self.bundle,
-            discovery::DiscoveryOptions { cbor_only: true },
-        )?;
+        let discovery = discover_validated_demo_bundle_cbor_only(&self.bundle)?;
         let secrets_handle =
             secrets_gate::resolve_secrets_manager(&self.bundle, &self.tenant, Some(&self.team))?;
         let runner_host =
@@ -1749,11 +1748,7 @@ impl DemoCapabilityMarkReadyArgs {
 
 impl DemoCapabilityMarkFailedArgs {
     fn run(self) -> anyhow::Result<()> {
-        domains::ensure_cbor_packs(&self.bundle)?;
-        let discovery = discovery::discover_with_options(
-            &self.bundle,
-            discovery::DiscoveryOptions { cbor_only: true },
-        )?;
+        let discovery = discover_validated_demo_bundle_cbor_only(&self.bundle)?;
         let secrets_handle =
             secrets_gate::resolve_secrets_manager(&self.bundle, &self.tenant, Some(&self.team))?;
         let runner_host =
@@ -1984,11 +1979,7 @@ impl DemoUpArgs {
                 .clone()
                 .unwrap_or_else(|| DEMO_DEFAULT_TENANT.to_string());
             let config = config::load_operator_config(&bundle)?;
-            domains::ensure_cbor_packs(&bundle)?;
-            let discovery = discovery::discover_with_options(
-                &bundle,
-                discovery::DiscoveryOptions { cbor_only: true },
-            )?;
+            let discovery = discover_validated_demo_bundle_cbor_only(&bundle)?;
             discovery::persist(&bundle, &tenant, &discovery)?;
             operator_log::info(
                 module_path!(),
@@ -2598,11 +2589,7 @@ fn discover_bundle_run_targets(bundle: &Path) -> anyhow::Result<Vec<DemoBundleTa
 
 impl DemoSetupArgs {
     fn run(self) -> anyhow::Result<()> {
-        domains::ensure_cbor_packs(&self.bundle)?;
-        let discovery = discovery::discover_with_options(
-            &self.bundle,
-            discovery::DiscoveryOptions { cbor_only: true },
-        )?;
+        let discovery = discover_validated_demo_bundle_cbor_only(&self.bundle)?;
         discovery::persist(&self.bundle, &self.tenant, &discovery)?;
         let domains = self.domain.resolve_domains(Some(&discovery));
         if demo_debug_enabled() {
@@ -4634,7 +4621,7 @@ impl DemoSendArgs {
         } else {
             Some(self.team.as_str())
         };
-        domains::ensure_cbor_packs(&self.bundle)?;
+        ensure_demo_bundle_cbor_packs(&self.bundle)?;
         let pack = resolve_demo_provider_pack(
             &self.bundle,
             &self.tenant,
@@ -4644,10 +4631,7 @@ impl DemoSendArgs {
         )?;
         let provider_type = primary_provider_type(&pack.path)
             .context("failed to determine provider type for demo send")?;
-        let discovery = discovery::discover_with_options(
-            &self.bundle,
-            discovery::DiscoveryOptions { cbor_only: true },
-        )?;
+        let discovery = discover_validated_demo_bundle_cbor_only(&self.bundle)?;
         let provider_map = discovery_map(&discovery.providers);
         let provider_id = provider_id_for_pack(&pack.path, &pack.pack_id, Some(&provider_map));
 
@@ -5902,74 +5886,100 @@ fn run_demo_up_setup(
     public_base_url: Option<String>,
     secrets_manager: Option<DynSecretsManager>,
 ) -> anyhow::Result<()> {
-    let providers_input = ProvidersInput::load(setup_input)?;
-    for domain in domains {
-        let provider_map = match providers_input.providers_for_domain(*domain) {
-            Some(map) if !map.is_empty() => map,
-            _ => {
-                println!(
-                    "[demo] no providers configured for domain {}; skipping provider setup",
-                    domains::domain_name(*domain)
-                );
-                continue;
-            }
-        };
-        let tenants = if let Some(tenant) = tenant_override.as_ref() {
-            vec![tenant.clone()]
-        } else {
-            let discovered = discover_tenants(bundle, *domain)?;
-            if discovered.is_empty() {
-                println!(
-                    "[demo] no tenants discovered for domain {}; skipping",
-                    domains::domain_name(*domain)
-                );
-                operator_log::warn(
-                    module_path!(),
-                    format!(
-                        "no tenants discovered for domain {}; skipping setup",
+    with_operator_bundle_read_root(bundle, |bundle_read_root| {
+        let providers_input = ProvidersInput::load(setup_input)?;
+        for domain in domains {
+            let provider_map = match providers_input.providers_for_domain(*domain) {
+                Some(map) if !map.is_empty() => map,
+                _ => {
+                    println!(
+                        "[demo] no providers configured for domain {}; skipping provider setup",
                         domains::domain_name(*domain)
-                    ),
-                );
-                continue;
+                    );
+                    continue;
+                }
+            };
+            let tenants = if let Some(tenant) = tenant_override.as_ref() {
+                vec![tenant.clone()]
+            } else {
+                let discovered = discover_tenants_with_roots(bundle, bundle_read_root, *domain)?;
+                if discovered.is_empty() {
+                    println!(
+                        "[demo] no tenants discovered for domain {}; skipping",
+                        domains::domain_name(*domain)
+                    );
+                    operator_log::warn(
+                        module_path!(),
+                        format!(
+                            "no tenants discovered for domain {}; skipping setup",
+                            domains::domain_name(*domain)
+                        ),
+                    );
+                    continue;
+                }
+                discovered
+            };
+            let provider_keys: BTreeSet<String> = provider_map.keys().cloned().collect();
+            let mut map = serde_json::Map::new();
+            for (provider, value) in provider_map {
+                map.insert(provider.clone(), value.clone());
             }
-            discovered
-        };
-        let provider_keys: BTreeSet<String> = provider_map.keys().cloned().collect();
-        let mut map = serde_json::Map::new();
-        for (provider, value) in provider_map {
-            map.insert(provider.clone(), value.clone());
+            let setup_answers =
+                SetupInputAnswers::new(serde_json::Value::Object(map), provider_keys.clone())?;
+            for tenant in tenants {
+                run_domain_command(DomainRunArgs {
+                    root: bundle.to_path_buf(),
+                    state_root: None,
+                    domain: *domain,
+                    action: DomainAction::Setup,
+                    tenant,
+                    team: team_override.clone(),
+                    provider_filter: None,
+                    dry_run: false,
+                    format: PlanFormat::Text,
+                    parallel: 1,
+                    allow_missing_setup: true,
+                    allow_contract_change: false,
+                    backup: false,
+                    online: false,
+                    secrets_env: Some(env.to_string()),
+                    runner_binary: runner_binary.clone(),
+                    best_effort: false,
+                    discovered_providers: None,
+                    setup_input: None,
+                    allowed_providers: Some(provider_keys.clone()),
+                    preloaded_setup_answers: Some(setup_answers.clone()),
+                    public_base_url: public_base_url.clone(),
+                    secrets_manager: secrets_manager.clone(),
+                })?;
+            }
         }
-        let setup_answers =
-            SetupInputAnswers::new(serde_json::Value::Object(map), provider_keys.clone())?;
-        for tenant in tenants {
-            run_domain_command(DomainRunArgs {
-                root: bundle.to_path_buf(),
-                state_root: None,
-                domain: *domain,
-                action: DomainAction::Setup,
-                tenant,
-                team: team_override.clone(),
-                provider_filter: None,
-                dry_run: false,
-                format: PlanFormat::Text,
-                parallel: 1,
-                allow_missing_setup: true,
-                allow_contract_change: false,
-                backup: false,
-                online: false,
-                secrets_env: Some(env.to_string()),
-                runner_binary: runner_binary.clone(),
-                best_effort: false,
-                discovered_providers: None,
-                setup_input: None,
-                allowed_providers: Some(provider_keys.clone()),
-                preloaded_setup_answers: Some(setup_answers.clone()),
-                public_base_url: public_base_url.clone(),
-                secrets_manager: secrets_manager.clone(),
-            })?;
-        }
-    }
-    Ok(())
+        Ok(())
+    })
+}
+
+fn with_demo_bundle_read_root<T>(
+    bundle: &Path,
+    f: impl FnOnce(&Path) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    with_operator_bundle_read_root(bundle, f)
+}
+
+fn demo_bundle_packs_root(bundle: &Path) -> anyhow::Result<PathBuf> {
+    with_demo_bundle_read_root(
+        bundle,
+        |bundle_read_root| Ok(bundle_read_root.join("packs")),
+    )
+}
+
+fn ensure_demo_bundle_cbor_packs(bundle: &Path) -> anyhow::Result<()> {
+    domains::ensure_bundle_cbor_packs(bundle)
+}
+
+fn discover_validated_demo_bundle_cbor_only(
+    bundle: &Path,
+) -> anyhow::Result<discovery::DiscoveryResult> {
+    discovery::discover_validated_bundle_cbor_only(bundle)
 }
 
 fn demo_provider_files(
@@ -6073,12 +6083,11 @@ pub fn demo_provider_packs(
     bundle: &Path,
     domain: Domain,
 ) -> anyhow::Result<Vec<domains::ProviderPack>> {
-    let is_demo_bundle = bundle.join("greentic.demo.yaml").exists();
-    if is_demo_bundle {
-        domains::discover_provider_packs_cbor_only(bundle, domain)
-    } else {
-        domains::discover_provider_packs(bundle, domain)
-    }
+    domains::discover_bundle_provider_packs_auto(bundle, domain)
+}
+
+fn demo_bundle_has_marker(bundle: &Path) -> anyhow::Result<bool> {
+    operator_bundle_cbor_only(bundle)
 }
 
 pub fn demo_provider_pack_by_filter(
@@ -6117,12 +6126,8 @@ pub(crate) fn resolve_demo_provider_pack(
     provider: &str,
     domain: Domain,
 ) -> anyhow::Result<domains::ProviderPack> {
-    let is_demo_bundle = root.join("greentic.demo.yaml").exists();
-    let mut packs = if is_demo_bundle {
-        domains::discover_provider_packs_cbor_only(root, domain)?
-    } else {
-        domains::discover_provider_packs(root, domain)?
-    };
+    let is_demo_bundle = demo_bundle_has_marker(root)?;
+    let mut packs = demo_provider_packs(root, domain)?;
     if is_demo_bundle && let Some(allowed) = demo_provider_files(root, tenant, team, domain)? {
         packs.retain(|pack| allowed.contains(&pack.file_name));
     }
@@ -6199,12 +6204,8 @@ struct DomainRunArgs {
 }
 
 fn run_domain_command(args: DomainRunArgs) -> anyhow::Result<()> {
-    let is_demo_bundle = args.root.join("greentic.demo.yaml").exists();
-    let mut packs = if is_demo_bundle {
-        domains::discover_provider_packs_cbor_only(&args.root, args.domain)?
-    } else {
-        domains::discover_provider_packs(&args.root, args.domain)?
-    };
+    let is_demo_bundle = demo_bundle_has_marker(&args.root)?;
+    let mut packs = demo_provider_packs(&args.root, args.domain)?;
     let provider_map = args.discovered_providers.as_ref().map(|providers| {
         let mut map = std::collections::BTreeMap::new();
         for provider in providers {
@@ -6897,6 +6898,7 @@ fn run_plan_item(
     } else {
         let output = runner_exec::run_provider_pack_flow(runner_exec::RunRequest {
             root: state_root.to_path_buf(),
+            run_dir: None,
             domain,
             pack_path: item.pack.path.clone(),
             pack_label: item.pack.pack_id.clone(),

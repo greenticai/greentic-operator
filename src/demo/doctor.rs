@@ -1,9 +1,12 @@
 use std::path::Path;
 
+use crate::bundle_access::{BundleAccessHandle, operator_bundle_access_config};
 use crate::offers::{OfferRegistry, discover_gtpacks};
 
 pub fn demo_doctor(bundle_root: &Path, pack_command: &Path) -> anyhow::Result<()> {
-    let packs_root = bundle_root.join("packs");
+    let bundle_access =
+        BundleAccessHandle::open(bundle_root, &operator_bundle_access_config(bundle_root))?;
+    let packs_root = bundle_access.active_root().join("packs");
     if !packs_root.exists() {
         return Err(anyhow::anyhow!("Bundle packs directory not found."));
     }
@@ -57,4 +60,27 @@ fn collect_gtpacks(dir: &Path, packs: &mut Vec<std::path::PathBuf>) -> anyhow::R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::bundle_access::operator_bundle_access_config;
+
+    #[test]
+    fn doctor_bundle_access_config_uses_bundle_state_for_directory_bundles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = operator_bundle_access_config(tmp.path());
+        assert_eq!(
+            config.runtime_dir,
+            tmp.path().join("state").join("runtime").join("bundle_fs")
+        );
+    }
+
+    #[test]
+    fn doctor_bundle_access_config_uses_temp_root_for_image_bundles() {
+        let sqsh = std::path::Path::new("/tmp/demo-bundle.sqsh");
+        let config = operator_bundle_access_config(sqsh);
+        assert!(config.runtime_dir.starts_with(std::env::temp_dir()));
+        assert!(config.runtime_dir.ends_with("bundle_fs"));
+    }
 }

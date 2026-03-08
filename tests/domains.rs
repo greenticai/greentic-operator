@@ -87,3 +87,56 @@ fn oauth_domain_discovery_uses_oauth_provider_dir() {
     assert_eq!(packs.len(), 1);
     assert_eq!(packs[0].pack_id, "oauth-provider");
 }
+
+#[test]
+fn discover_bundle_provider_packs_auto_uses_json_for_plain_bundles() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let providers = root.join("providers").join("messaging");
+    std::fs::create_dir_all(&providers).unwrap();
+    write_pack(
+        &providers.join("json.gtpack"),
+        "json-pack",
+        &["setup_default"],
+    )
+    .unwrap();
+
+    let packs = domains::discover_bundle_provider_packs_auto(root, Domain::Messaging).unwrap();
+    assert_eq!(packs.len(), 1);
+    assert_eq!(packs[0].pack_id, "json-pack");
+}
+
+#[test]
+fn discover_bundle_provider_packs_auto_uses_cbor_for_demo_bundles() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let providers = root.join("providers").join("messaging");
+    std::fs::create_dir_all(&providers).unwrap();
+    std::fs::write(root.join("greentic.demo.yaml"), "demo: true\n").unwrap();
+
+    let file = File::create(providers.join("demo.gtpack")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::FileOptions::<()>::default();
+    zip.start_file("manifest.cbor", options).unwrap();
+    let manifest = serde_cbor::to_vec(&serde_cbor::Value::Map(
+        [
+            (
+                serde_cbor::Value::Text("pack_id".to_string()),
+                serde_cbor::Value::Text("demo-pack".to_string()),
+            ),
+            (
+                serde_cbor::Value::Text("flows".to_string()),
+                serde_cbor::Value::Array(Vec::new()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    ))
+    .unwrap();
+    zip.write_all(&manifest).unwrap();
+    zip.finish().unwrap();
+
+    let packs = domains::discover_bundle_provider_packs_auto(root, Domain::Messaging).unwrap();
+    assert_eq!(packs.len(), 1);
+    assert_eq!(packs[0].pack_id, "demo-pack");
+}

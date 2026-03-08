@@ -260,13 +260,17 @@ fn spawn_universal_subscriptions_service(
     let desired = &config.services.subscriptions.universal.desired;
     let (runner_host, context) = build_runner(bundle_root, tenant, team_override.clone())?;
     let store = SubscriptionStore::new(state_root(bundle_root));
-    let scheduler = Scheduler::new(SubscriptionService::new(runner_host, context), store);
+    let scheduler = Scheduler::new(
+        SubscriptionService::new(runner_host.clone(), context),
+        store,
+    );
 
     ensure_desired_subscriptions(
         bundle_root,
         tenant,
         team_override.clone(),
         desired,
+        &runner_host,
         &scheduler,
     )?;
 

@@ -115,6 +115,7 @@ pub fn run_app_flow(
 ) -> Result<Vec<ChannelMessageEnvelope>> {
     let request = RunRequest {
         root: bundle.to_path_buf(),
+        run_dir: None,
         domain: crate::domains::Domain::Messaging,
         pack_path: pack_path.to_path_buf(),
         pack_label: pack_id.to_string(),

@@ -131,6 +131,10 @@ impl OfferRegistry {
         counts
     }
 
+    pub fn offers(&self) -> Vec<&Offer> {
+        self.by_key.values().collect()
+    }
+
     pub fn hook_counts_by_stage_contract(&self) -> Vec<(String, String, usize)> {
         let mut counts: BTreeMap<(String, String), usize> = BTreeMap::new();
         for offer in self.by_key.values() {
@@ -229,8 +233,15 @@ pub fn discover_gtpacks(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 }
 
 pub fn load_pack_offers(pack_ref: &Path) -> anyhow::Result<PackOffers> {
-    let file = std::fs::File::open(pack_ref)?;
-    let mut archive = ZipArchive::new(file)?;
+    let bytes = std::fs::read(pack_ref)?;
+    load_pack_offers_from_bytes(pack_ref, &bytes)
+}
+
+pub fn load_pack_offers_from_bytes(
+    pack_ref: &Path,
+    pack_bytes: &[u8],
+) -> anyhow::Result<PackOffers> {
+    let mut archive = ZipArchive::new(std::io::Cursor::new(pack_bytes))?;
     let mut manifest_entry = archive.by_name("manifest.cbor").map_err(|err| match err {
         ZipError::FileNotFound => {
             anyhow::anyhow!("manifest.cbor missing in {}", pack_ref.display())

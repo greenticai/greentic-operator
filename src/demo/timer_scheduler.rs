@@ -196,7 +196,13 @@ fn run_timer_handler(
     let output = outcome.output.unwrap_or_else(|| json!({}));
     let events = parse_events(&output)?;
     if !events.is_empty() {
-        route_events_to_default_flow(scheduler.runner_host.bundle_root(), &context, &events)?;
+        route_events_to_default_flow(
+            scheduler.runner_host.as_ref(),
+            &scheduler.runner_host.bundle_read_root(),
+            scheduler.runner_host.bundle_root(),
+            &context,
+            &events,
+        )?;
     }
     timer.last_run_rfc3339 = Some(occurred_at);
     Ok(())

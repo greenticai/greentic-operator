@@ -3,7 +3,7 @@ use std::{
     io,
     io::Write,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, RwLock},
 };
 
 use anyhow::Context;
@@ -21,7 +21,7 @@ pub enum Level {
 
 struct Logger {
     writer: Mutex<File>,
-    min_level: Level,
+    min_level: RwLock<Level>,
 }
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
@@ -42,7 +42,7 @@ pub fn init(log_dir: PathBuf, min_level: Level) -> anyhow::Result<PathBuf> {
             Ok(file) => {
                 let logger = Logger {
                     writer: Mutex::new(file),
-                    min_level,
+                    min_level: RwLock::new(min_level),
                 };
                 if LOGGER.set(logger).is_err() {
                     anyhow::bail!("operator logger already initialized");
@@ -87,7 +87,11 @@ pub fn log(level: Level, target: &str, message: String) {
         Some(logger) => logger,
         None => return,
     };
-    if level < logger.min_level {
+    let min_level = match logger.min_level.read() {
+        Ok(level) => *level,
+        Err(_) => return,
+    };
+    if level < min_level {
         return;
     }
     let mut writer = match logger.writer.lock() {
@@ -105,6 +109,25 @@ pub fn log(level: Level, target: &str, message: String) {
     .is_err()
     {
         let _ = writer.flush();
+    }
+}
+
+pub fn current_level() -> Option<Level> {
+    let logger = LOGGER.get()?;
+    let level = logger.min_level.read().ok()?;
+    Some(*level)
+}
+
+pub fn set_level(level: Level) -> bool {
+    let Some(logger) = LOGGER.get() else {
+        return false;
+    };
+    match logger.min_level.write() {
+        Ok(mut current) => {
+            *current = level;
+            true
+        }
+        Err(_) => false,
     }
 }
 

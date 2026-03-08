@@ -165,6 +165,29 @@ async fn handle_request_inner(
 
     let path = req.uri().path().to_string();
 
+    if path == "/healthz"
+        || path == "/readyz"
+        || path == "/status"
+        || path == "/runtime/drain"
+        || path == "/runtime/resume"
+        || path == "/runtime/shutdown"
+        || path == "/deployments/stage"
+        || path == "/deployments/warm"
+        || path == "/deployments/activate"
+        || path == "/deployments/rollback"
+        || path == "/deployments/complete-drain"
+        || path == "/config/publish"
+        || path == "/cache/invalidate"
+        || path == "/observability/log-level"
+    {
+        return Ok(crate::control_plane::handle_control_plane_http_request(
+            req,
+            &path,
+            &state.runner_host,
+        )
+        .await);
+    }
+
     // Onboard API routes: /api/onboard/*
     if path.starts_with("/api/onboard") {
         return crate::onboard::api::handle_onboard_request(req, &path, &state.runner_host)
@@ -260,7 +283,7 @@ async fn handle_request_inner(
         &ingress_request,
         &context,
     )
-    .map_err(|err| error_response(StatusCode::BAD_GATEWAY, err.to_string()))?;
+    .map_err(map_ingress_error_response)?;
     if !result.events.is_empty() {
         operator_log::info(
             module_path!(),
@@ -274,8 +297,14 @@ async fn handle_request_inner(
         );
     }
     if domain == Domain::Events && !result.events.is_empty() {
-        route_events_to_default_flow(state.runner_host.bundle_root(), &context, &result.events)
-            .map_err(|err| error_response(StatusCode::BAD_GATEWAY, err.to_string()))?;
+        route_events_to_default_flow(
+            state.runner_host.as_ref(),
+            &state.runner_host.bundle_read_root(),
+            state.runner_host.bundle_root(),
+            &context,
+            &result.events,
+        )
+        .map_err(|err| error_response(StatusCode::BAD_GATEWAY, err.to_string()))?;
     }
     if domain == Domain::Messaging && !result.messaging_envelopes.is_empty() {
         // Filter out bot self-messages to prevent echo loops (e.g. Webex bots see
@@ -308,14 +337,20 @@ async fn handle_request_inner(
                 .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err));
         }
         let provider = parsed.provider.clone();
-        let bundle = state.runner_host.bundle_root().to_path_buf();
+        let bundle_read_root = state.runner_host.bundle_read_root().to_path_buf();
+        let bundle_state_root = state.runner_host.bundle_root().to_path_buf();
         let ctx = context.clone();
         let runner_host = state.runner_host.clone();
         // Run messaging pipeline in a background thread to avoid blocking the HTTP response.
         std::thread::spawn(move || {
-            if let Err(err) =
-                route_messaging_envelopes(&bundle, &runner_host, &provider, &ctx, envelopes)
-            {
+            if let Err(err) = route_messaging_envelopes(
+                &bundle_read_root,
+                &bundle_state_root,
+                &runner_host,
+                &provider,
+                &ctx,
+                envelopes,
+            ) {
                 operator_log::error(
                     module_path!(),
                     format!(
@@ -348,14 +383,28 @@ async fn handle_request_inner(
 
 /// Run the messaging pipeline for ingress envelopes: app flow → render_plan → encode → send_payload.
 fn route_messaging_envelopes(
-    bundle: &Path,
+    bundle_read_root: &Path,
+    bundle_state_root: &Path,
     runner_host: &DemoRunnerHost,
     provider: &str,
     ctx: &OperatorContext,
     envelopes: Vec<ChannelMessageEnvelope>,
 ) -> anyhow::Result<()> {
+    runner_host
+        .enforce_request_policy(
+            "messaging_pipeline.egress",
+            &[
+                "session",
+                "state",
+                "bundle_source",
+                "bundle_resolver",
+                "bundle_fs",
+            ],
+            1,
+        )
+        .map_err(|refusal| anyhow::anyhow!("runtime request refused: {}", refusal.message))?;
     let team = ctx.team.as_deref();
-    let app_pack_path = app::resolve_app_pack_path(bundle, &ctx.tenant, team, None)
+    let app_pack_path = app::resolve_app_pack_path(bundle_read_root, &ctx.tenant, team, None)
         .context("resolve app pack for messaging pipeline")?;
     let pack_info = app::load_app_pack_info(&app_pack_path).context("load app pack manifest")?;
     let flow = app::select_app_flow(&pack_info).context("select app default flow")?;
@@ -408,11 +457,25 @@ fn route_messaging_envelopes(
                             route_to_card
                         ),
                     );
-                    run_app_flow_safe(bundle, ctx, &app_pack_path, &pack_info, flow, envelope)
+                    run_app_flow_safe(
+                        bundle_state_root,
+                        ctx,
+                        &app_pack_path,
+                        &pack_info,
+                        flow,
+                        envelope,
+                    )
                 }
             }
         } else {
-            run_app_flow_safe(bundle, ctx, &app_pack_path, &pack_info, flow, envelope)
+            run_app_flow_safe(
+                bundle_state_root,
+                ctx,
+                &app_pack_path,
+                &pack_info,
+                flow,
+                envelope,
+            )
         };
 
         for out_envelope in outputs {
@@ -519,7 +582,7 @@ fn read_card_from_pack(pack_path: &std::path::Path, card_key: &str) -> Option<se
 
 /// Run the app flow, returning outputs or a fallback clone of the input envelope.
 fn run_app_flow_safe(
-    bundle: &std::path::Path,
+    bundle_state_root: &std::path::Path,
     ctx: &crate::demo::runner_host::OperatorContext,
     app_pack_path: &std::path::Path,
     pack_info: &crate::messaging_universal::app::AppPackInfo,
@@ -527,7 +590,7 @@ fn run_app_flow_safe(
     envelope: &greentic_types::ChannelMessageEnvelope,
 ) -> Vec<greentic_types::ChannelMessageEnvelope> {
     match app::run_app_flow(
-        bundle,
+        bundle_state_root,
         ctx,
         app_pack_path,
         &pack_info.pack_id,
@@ -612,18 +675,24 @@ async fn handle_directline_request(
         &ingress_request,
         &context,
     )
-    .map_err(|err| error_response(StatusCode::BAD_GATEWAY, err.to_string()))?;
+    .map_err(map_ingress_error_response)?;
 
     // Route messaging envelopes through the pipeline (app flow → encode → send)
     if !result.messaging_envelopes.is_empty() {
         let envelopes = result.messaging_envelopes.clone();
-        let bundle = state.runner_host.bundle_root().to_path_buf();
+        let bundle_read_root = state.runner_host.bundle_read_root().to_path_buf();
+        let bundle_state_root = state.runner_host.bundle_root().to_path_buf();
         let ctx = context.clone();
         let runner_host = state.runner_host.clone();
         std::thread::spawn(move || {
-            if let Err(err) =
-                route_messaging_envelopes(&bundle, &runner_host, &provider, &ctx, envelopes)
-            {
+            if let Err(err) = route_messaging_envelopes(
+                &bundle_read_root,
+                &bundle_state_root,
+                &runner_host,
+                &provider,
+                &ctx,
+                envelopes,
+            ) {
                 operator_log::error(
                     module_path!(),
                     format!("[demo ingress] webchat messaging pipeline failed err={err}",),
@@ -648,6 +717,14 @@ fn cors_preflight_response() -> Response<Full<Bytes>> {
         .header("Access-Control-Max-Age", "86400")
         .body(Full::from(Bytes::new()))
         .unwrap()
+}
+
+fn map_ingress_error_response(err: anyhow::Error) -> Response<Full<Bytes>> {
+    let message = err.to_string();
+    if message.starts_with("runtime request refused:") {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, message);
+    }
+    error_response(StatusCode::BAD_GATEWAY, message)
 }
 
 fn with_cors(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
@@ -815,6 +892,14 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<Full<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use tempfile::tempdir;
+
+    use crate::runtime_core::{
+        RuntimeCore, RuntimeHealth, RuntimeHealthStatus, ScopedStateKey, StateProvider,
+    };
 
     #[test]
     fn parses_v1_route_with_optional_segments() {
@@ -833,5 +918,101 @@ mod tests {
             .expect("route should parse");
         assert_eq!(parsed.domain, Domain::Messaging);
         assert_eq!(parsed.team, "default");
+    }
+
+    struct DegradedStateProvider;
+
+    #[async_trait]
+    impl StateProvider for DegradedStateProvider {
+        async fn get(&self, _key: &ScopedStateKey) -> anyhow::Result<Option<serde_json::Value>> {
+            Ok(None)
+        }
+
+        async fn put(
+            &self,
+            _key: &ScopedStateKey,
+            _value: serde_json::Value,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn delete(&self, _key: &ScopedStateKey) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn health(&self) -> anyhow::Result<RuntimeHealth> {
+            Ok(RuntimeHealth {
+                status: RuntimeHealthStatus::Degraded,
+                reason: Some("state provider latency high".to_string()),
+            })
+        }
+    }
+
+    #[test]
+    fn route_messaging_envelopes_refuses_when_safe_mode_blocks_pipeline() {
+        let tmp = tempdir().expect("tempdir");
+        let discovery = crate::discovery::DiscoveryResult {
+            domains: crate::discovery::DetectedDomains {
+                messaging: false,
+                events: false,
+                oauth: false,
+            },
+            providers: Vec::new(),
+        };
+        let secrets_handle =
+            crate::secrets_gate::resolve_secrets_manager(tmp.path(), "default", None)
+                .expect("resolve secrets manager");
+        let host = DemoRunnerHost::new(
+            tmp.path().to_path_buf(),
+            &discovery,
+            None,
+            secrets_handle,
+            false,
+        )
+        .expect("build host");
+
+        let current = host.runtime_core();
+        let mut seams = current.seams().clone();
+        seams.state_provider = Some(Arc::new(DegradedStateProvider));
+        host.replace_runtime_core_for_test(RuntimeCore::new(
+            current.registry().clone(),
+            seams,
+            current.wiring_plan().clone(),
+        ));
+
+        let env_id = greentic_types::EnvId::try_from("dev").expect("env");
+        let tenant_id = greentic_types::TenantId::try_from("tenant-a").expect("tenant");
+        let tenant_ctx = greentic_types::TenantCtx::new(env_id, tenant_id).with_team(Some(
+            greentic_types::TeamId::try_from("default").expect("team"),
+        ));
+        let envelope = ChannelMessageEnvelope {
+            id: "msg-1".to_string(),
+            tenant: tenant_ctx,
+            channel: "webchat".to_string(),
+            session_id: "session-1".to_string(),
+            reply_scope: None,
+            from: None,
+            to: Vec::new(),
+            correlation_id: Some("corr-msg".to_string()),
+            text: Some("hello".to_string()),
+            attachments: Vec::new(),
+            metadata: std::collections::BTreeMap::new(),
+        };
+        let ctx = OperatorContext {
+            tenant: "tenant-a".to_string(),
+            team: Some("default".to_string()),
+            correlation_id: Some("corr-msg".to_string()),
+        };
+
+        let err = route_messaging_envelopes(
+            tmp.path(),
+            tmp.path(),
+            &host,
+            "provider-a",
+            &ctx,
+            vec![envelope],
+        )
+        .expect_err("safe mode should refuse messaging pipeline");
+        assert!(err.to_string().contains("runtime request refused"));
     }
 }

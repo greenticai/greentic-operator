@@ -9,6 +9,7 @@ use hyper::{
 use serde_json::{Value, json};
 
 use crate::demo::runner_host::DemoRunnerHost;
+use crate::runtime_core::{AdminAction, AuthorizationDecision};
 
 use super::providers;
 use super::wizard;
@@ -49,6 +50,26 @@ pub async fn handle_onboard_request(
         .strip_prefix("/api/onboard")
         .unwrap_or("")
         .trim_end_matches('/');
+    let action = AdminAction {
+        action: format!(
+            "onboard.{}.{}",
+            method.as_str().to_ascii_lowercase(),
+            sub_path
+        ),
+        actor: "onboard_api".to_string(),
+        resource: Some(path.to_string()),
+    };
+    match runner_host.authorize_admin_action(action).map_err(|err| {
+        into_error(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            err.to_string(),
+        ))
+    })? {
+        AuthorizationDecision::Allow => {}
+        AuthorizationDecision::Deny { reason } => {
+            return Err(into_error(error_response(StatusCode::FORBIDDEN, reason)));
+        }
+    }
 
     match (method, sub_path) {
         (Method::GET, "/providers") => providers::list_providers(&state),

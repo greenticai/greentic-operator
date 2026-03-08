@@ -1,6 +1,6 @@
 [package]
 name = "greentic-operator"
-version = "0.4.36"
+version = "0.4.37"
 edition = "2024"
 rust-version = "1.91"
 description = "Greentic operator CLI for local dev and demo orchestration."
@@ -53,7 +53,9 @@ greentic-interfaces-wasmtime = { version = "0.4" }
 greentic-qa-lib = "0.4"
 greentic-runner-desktop = { version = "0.4" }
 greentic-runner-host = { version = "0.4" }
+greentic-session = "0.4"
 greentic-secrets-lib = { version = "0.4", features = ["providers-dev"] }
+greentic-state = "0.4"
 greentic-types = { version = "0.4", features = ["serde"] }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
@@ -71,6 +73,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_cbor = "0.11"
 serde_json = "1.0"
 serde_yaml_bw = { package = "serde_yaml_gtc", version = "2.5.2" }
+sha2 = "0.10"
 sys-locale = "0.3"
 sysinfo = "0.38"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal", "net"] }

@@ -13,6 +13,7 @@ pub struct RunOutput {
 
 pub struct RunRequest {
     pub root: PathBuf,
+    pub run_dir: Option<PathBuf>,
     pub domain: Domain,
     pub pack_path: PathBuf,
     pub pack_label: String,
@@ -24,12 +25,15 @@ pub struct RunRequest {
 }
 
 pub fn run_provider_pack_flow(request: RunRequest) -> anyhow::Result<RunOutput> {
-    let run_dir = state_layout::run_dir(
-        &request.root,
-        request.domain,
-        &request.pack_label,
-        &request.flow_id,
-    )?;
+    let run_dir = match request.run_dir {
+        Some(run_dir) => run_dir,
+        None => state_layout::run_dir(
+            &request.root,
+            request.domain,
+            &request.pack_label,
+            &request.flow_id,
+        )?,
+    };
     std::fs::create_dir_all(&run_dir)?;
     let input_path = run_dir.join("input.json");
     let input_json = serde_json::to_string_pretty(&request.input)?;

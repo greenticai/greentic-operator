@@ -55,8 +55,10 @@ pub fn run_ingress(
     runner_binary: Option<PathBuf>,
     secrets_handle: SecretsManagerHandle,
 ) -> anyhow::Result<(HttpOutV1, Vec<ChannelMessageEnvelope>)> {
-    let discovery =
-        discovery::discover_with_options(bundle, discovery::DiscoveryOptions { cbor_only: true })?;
+    let discovery = discovery::discover_bundle_with_options(
+        bundle,
+        discovery::DiscoveryOptions { cbor_only: true },
+    )?;
     let runner_host = DemoRunnerHost::new(
         bundle.to_path_buf(),
         &discovery,
@@ -78,7 +80,13 @@ pub fn run_ingress(
     };
     let mut response = serde_json::from_value::<HttpOutV1>(output)
         .with_context(|| "failed to deserialize HttpOutV1 response")?;
-    apply_post_ingress_hooks_http(bundle, &runner_host, request, &mut response, ctx)?;
+    apply_post_ingress_hooks_http(
+        &runner_host.bundle_read_root(),
+        &runner_host,
+        request,
+        &mut response,
+        ctx,
+    )?;
     let mut envelopes = Vec::new();
     for event in response.events.iter() {
         let envelope: ChannelMessageEnvelope =

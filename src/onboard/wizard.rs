@@ -74,12 +74,14 @@ fn parse_request(body: &Value) -> OnboardResult<RequestParams> {
 
 fn load_form_spec_with_fallback(
     bundle_root: &std::path::Path,
+    bundle_read_root: &std::path::Path,
     domain: Domain,
     pack: &ProviderPack,
     params: &RequestParams,
 ) -> Option<qa_spec::FormSpec> {
     match get_form_spec_from_pack(
         bundle_root,
+        bundle_read_root,
         domain,
         pack,
         &params.provider_id,
@@ -111,7 +113,7 @@ fn load_form_spec_with_fallback(
             let mut spec = setup_to_formspec::pack_to_form_spec(&pack.path, &params.provider_id)?;
             apply_i18n_to_form_spec(
                 &mut spec,
-                bundle_root,
+                bundle_read_root,
                 &params.provider_id,
                 &params.locale,
                 params.mode.as_str(),
@@ -290,15 +292,22 @@ fn inject_public_url_meta(
 pub fn get_form_spec(state: &OnboardState, body: &Value) -> OnboardResult {
     let params = parse_request(body)?;
     let bundle_root = state.runner_host.bundle_root();
-    let pack = find_provider_pack(bundle_root, params.domain, &params.provider_id)?;
+    let bundle_read_root = state.runner_host.bundle_read_root();
+    let pack = find_provider_pack(&bundle_read_root, params.domain, &params.provider_id)?;
 
-    let form_spec = load_form_spec_with_fallback(bundle_root, params.domain, &pack, &params)
-        .ok_or_else(|| {
-            into_error(error_response(
-                StatusCode::NOT_FOUND,
-                format!("no qa-spec or setup.yaml found in {}", pack.file_name),
-            ))
-        })?;
+    let form_spec = load_form_spec_with_fallback(
+        bundle_root,
+        &bundle_read_root,
+        params.domain,
+        &pack,
+        &params,
+    )
+    .ok_or_else(|| {
+        into_error(error_response(
+            StatusCode::NOT_FOUND,
+            format!("no qa-spec or setup.yaml found in {}", pack.file_name),
+        ))
+    })?;
 
     // For upgrade mode: pre-fill answers with existing config values
     let answers = if params.mode == QaMode::Upgrade {
@@ -335,15 +344,22 @@ pub fn get_form_spec(state: &OnboardState, body: &Value) -> OnboardResult {
 pub fn validate_answers(state: &OnboardState, body: &Value) -> OnboardResult {
     let params = parse_request(body)?;
     let bundle_root = state.runner_host.bundle_root();
-    let pack = find_provider_pack(bundle_root, params.domain, &params.provider_id)?;
+    let bundle_read_root = state.runner_host.bundle_read_root();
+    let pack = find_provider_pack(&bundle_read_root, params.domain, &params.provider_id)?;
 
-    let form_spec = load_form_spec_with_fallback(bundle_root, params.domain, &pack, &params)
-        .ok_or_else(|| {
-            into_error(error_response(
-                StatusCode::NOT_FOUND,
-                format!("no qa-spec found for {}", params.provider_id),
-            ))
-        })?;
+    let form_spec = load_form_spec_with_fallback(
+        bundle_root,
+        &bundle_read_root,
+        params.domain,
+        &pack,
+        &params,
+    )
+    .ok_or_else(|| {
+        into_error(error_response(
+            StatusCode::NOT_FOUND,
+            format!("no qa-spec found for {}", params.provider_id),
+        ))
+    })?;
 
     let ctx = json!({ "tenant": params.tenant(), "team": params.team() });
     let payload = build_render_payload(&form_spec, &ctx, &params.answers);
@@ -364,7 +380,8 @@ pub fn validate_answers(state: &OnboardState, body: &Value) -> OnboardResult {
 pub fn submit_answers(state: &OnboardState, body: &Value) -> OnboardResult {
     let params = parse_request(body)?;
     let bundle_root = state.runner_host.bundle_root();
-    let pack = find_provider_pack(bundle_root, params.domain, &params.provider_id)?;
+    let bundle_read_root = state.runner_host.bundle_read_root();
+    let pack = find_provider_pack(&bundle_read_root, params.domain, &params.provider_id)?;
 
     operator_log::info(
         module_path!(),
@@ -437,6 +454,7 @@ pub fn submit_answers(state: &OnboardState, body: &Value) -> OnboardResult {
     // 2. Get FormSpec (for secret field identification — locale not needed here)
     let mut form_spec = match get_form_spec_from_pack(
         bundle_root,
+        &bundle_read_root,
         params.domain,
         &pack,
         &params.provider_id,
@@ -629,6 +647,7 @@ pub fn submit_answers(state: &OnboardState, body: &Value) -> OnboardResult {
 #[allow(clippy::too_many_arguments)]
 fn get_form_spec_from_pack(
     bundle_root: &std::path::Path,
+    bundle_read_root: &std::path::Path,
     domain: Domain,
     pack: &ProviderPack,
     provider_id: &str,
@@ -640,12 +659,10 @@ fn get_form_spec_from_pack(
     use super::provider_i18n;
     use crate::demo::qa_bridge;
     use crate::demo::runner_host::{DemoRunnerHost, OperatorContext};
-    use crate::discovery::{self, DiscoveryOptions};
+    use crate::discovery;
     use crate::secrets_gate;
 
-    let cbor_only = bundle_root.join("greentic.demo.yaml").exists();
-    let discovery =
-        discovery::discover_with_options(bundle_root, DiscoveryOptions { cbor_only }).ok()?;
+    let discovery = discovery::discover_runtime_bundle(bundle_root, bundle_read_root).ok()?;
     let secrets_handle = secrets_gate::resolve_secrets_manager(bundle_root, tenant, team).ok()?;
     let host = DemoRunnerHost::new(
         bundle_root.to_path_buf(),
@@ -710,12 +727,13 @@ fn get_form_spec_from_pack(
             .into_iter()
             .collect();
 
-    let i18n_dir = provider_i18n::resolve_i18n_dir(bundle_root);
+    let i18n_dir = provider_i18n::resolve_i18n_dir(bundle_read_root);
     operator_log::info(
         module_path!(),
         format!(
-            "[onboard] i18n: bundle_root={} locale={} dir={:?} wasm_keys={}",
+            "[onboard] i18n: bundle_root={} read_root={} locale={} dir={:?} wasm_keys={}",
             bundle_root.display(),
+            bundle_read_root.display(),
             locale,
             i18n_dir,
             wasm_english.len(),
@@ -882,11 +900,11 @@ fn apply_i18n_to_form_spec(
 }
 
 fn find_provider_pack(
-    bundle_root: &std::path::Path,
+    bundle_read_root: &std::path::Path,
     domain: Domain,
     provider_id: &str,
 ) -> OnboardResult<ProviderPack> {
-    let packs = domains::discover_provider_packs(bundle_root, domain).map_err(|err| {
+    let packs = domains::discover_provider_packs(bundle_read_root, domain).map_err(|err| {
         into_error(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("discover packs: {err}"),

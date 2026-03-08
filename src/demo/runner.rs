@@ -16,7 +16,7 @@ use greentic_runner_host::{
     },
     pack::{ComponentResolution, PackRuntime},
     runner::engine::{FlowContext, FlowEngine, FlowExecution, FlowSnapshot, FlowStatus},
-    storage::{DynSessionStore, DynStateStore, new_session_store, new_state_store},
+    storage::{DynSessionStore, DynStateStore},
     trace::TraceConfig,
 };
 use greentic_types::{PackManifest, decode_pack_manifest};
@@ -24,7 +24,12 @@ use serde_json::Value;
 use tokio::runtime::Runtime;
 use zip::ZipArchive;
 
+use super::runner_host::{
+    ActiveRuntimeIdentity, LocalRuntimeSessionProvider, LocalRuntimeStateProvider,
+    SessionProviderStoreAdapter, StateProviderStoreAdapter,
+};
 use crate::demo::types::{DemoBlockedOn, UserEvent};
+use crate::runtime_core::{SessionProvider, StateProvider};
 use crate::secrets_gate::DynSecretsManager;
 
 pub struct DemoRunner {
@@ -73,8 +78,43 @@ impl DemoRunner {
         initial_input: Value,
         secrets_manager: DynSecretsManager,
     ) -> anyhow::Result<Self> {
+        let bundle_root = infer_bundle_root(&pack_path);
+        let runtime_identity = ActiveRuntimeIdentity::new(pack_path.display().to_string());
+        let session_provider = Arc::new(LocalRuntimeSessionProvider::new(
+            bundle_root.clone(),
+            runtime_identity.clone(),
+        ));
+        let state_provider = Arc::new(LocalRuntimeStateProvider::new(
+            bundle_root,
+            runtime_identity,
+        ));
+        Self::with_entry_flow_and_providers(
+            pack_path,
+            tenant,
+            team,
+            (entry_flow, pack_id),
+            initial_input,
+            (session_provider, state_provider),
+            secrets_manager,
+        )
+    }
+
+    pub fn with_entry_flow_and_providers(
+        pack_path: PathBuf,
+        tenant: &str,
+        team: Option<String>,
+        flow: (String, String),
+        initial_input: Value,
+        providers: (Arc<dyn SessionProvider>, Arc<dyn StateProvider>),
+        secrets_manager: DynSecretsManager,
+    ) -> anyhow::Result<Self> {
         let runtime = Runtime::new().context("build demo runner runtime")?;
         let host_config = Arc::new(build_host_config(tenant));
+        let (entry_flow, pack_id) = flow;
+        let (session_provider, state_provider) = providers;
+        let session_store =
+            Arc::new(SessionProviderStoreAdapter::new(session_provider)) as DynSessionStore;
+        let state_store = Arc::new(StateProviderStoreAdapter::new(state_provider)) as DynStateStore;
         Ok(Self {
             pack_path,
             entry_flow,
@@ -84,8 +124,8 @@ impl DemoRunner {
             initial_input,
             pending_input: None,
             snapshot: None,
-            session_store: new_session_store(),
-            state_store: new_state_store(),
+            session_store,
+            state_store,
             secrets_manager,
             host_config,
             runtime,
@@ -193,6 +233,18 @@ fn build_host_config(tenant: &str) -> HostConfig {
         validation: ValidationConfig::from_env(),
         operator_policy: OperatorPolicy::allow_all(),
     }
+}
+
+fn infer_bundle_root(pack_path: &Path) -> PathBuf {
+    let Some(pack_dir) = pack_path.parent() else {
+        return PathBuf::from(".");
+    };
+    for ancestor in pack_dir.ancestors() {
+        if ancestor.join("packs").is_dir() || ancestor.join("providers").is_dir() {
+            return ancestor.to_path_buf();
+        }
+    }
+    pack_dir.to_path_buf()
 }
 
 fn select_entry_flow(pack_path: &Path) -> anyhow::Result<(String, String)> {

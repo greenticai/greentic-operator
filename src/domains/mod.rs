@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use serde_cbor::Value as CborValue;
 use zip::result::ZipError;
 
+use crate::bundle_access::{
+    BundleAccessHandle, operator_bundle_access_config, operator_bundle_cbor_only,
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub enum Domain {
     Messaging,
@@ -112,6 +116,12 @@ pub fn ensure_cbor_packs(root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn ensure_bundle_cbor_packs(bundle_ref: &Path) -> anyhow::Result<()> {
+    let bundle_access =
+        BundleAccessHandle::open(bundle_ref, &operator_bundle_access_config(bundle_ref))?;
+    ensure_cbor_packs(bundle_access.active_root())
+}
+
 pub fn manifest_cbor_issue_detail(path: &Path) -> anyhow::Result<Option<String>> {
     let file = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -211,6 +221,35 @@ pub fn discover_provider_packs(root: &Path, domain: Domain) -> anyhow::Result<Ve
     append_packs_from_root(&mut packs, &mut seen, &packs_dir, read_pack_manifest)?;
     packs.sort_by(|a, b| a.file_name.cmp(&b.file_name));
     Ok(packs)
+}
+
+pub fn discover_provider_packs_with_options(
+    root: &Path,
+    domain: Domain,
+    cbor_only: bool,
+) -> anyhow::Result<Vec<ProviderPack>> {
+    if cbor_only {
+        discover_provider_packs_cbor_only(root, domain)
+    } else {
+        discover_provider_packs(root, domain)
+    }
+}
+
+pub fn discover_bundle_provider_packs(
+    bundle_ref: &Path,
+    domain: Domain,
+    cbor_only: bool,
+) -> anyhow::Result<Vec<ProviderPack>> {
+    let bundle_access =
+        BundleAccessHandle::open(bundle_ref, &operator_bundle_access_config(bundle_ref))?;
+    discover_provider_packs_with_options(bundle_access.active_root(), domain, cbor_only)
+}
+
+pub fn discover_bundle_provider_packs_auto(
+    bundle_ref: &Path,
+    domain: Domain,
+) -> anyhow::Result<Vec<ProviderPack>> {
+    discover_bundle_provider_packs(bundle_ref, domain, operator_bundle_cbor_only(bundle_ref)?)
 }
 
 pub fn discover_provider_packs_cbor_only(

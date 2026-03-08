@@ -84,8 +84,19 @@ fn domain_from_str(value: &str) -> Option<Domain> {
 
 /// Discover tenants inside the bundle for the requested domain.
 pub fn discover_tenants(bundle: &Path, domain: Domain) -> anyhow::Result<Vec<String>> {
-    let domain_dir = bundle.join(domains::domain_name(domain)).join("tenants");
-    let general_dir = bundle.join("tenants");
+    discover_tenants_with_roots(bundle, bundle, domain)
+}
+
+/// Discover tenants using separate writable and readable bundle roots.
+pub fn discover_tenants_with_roots(
+    _bundle_root: &Path,
+    bundle_read_root: &Path,
+    domain: Domain,
+) -> anyhow::Result<Vec<String>> {
+    let domain_dir = bundle_read_root
+        .join(domains::domain_name(domain))
+        .join("tenants");
+    let general_dir = bundle_read_root.join("tenants");
     if let Some(tenants) = read_tenants(&domain_dir)? {
         return Ok(tenants);
     }
@@ -166,6 +177,18 @@ messaging:
         fs::create_dir_all(tenants_dir.join("gamma"))?;
         let tenants = discover_tenants(bundle.path(), Domain::Events)?;
         assert_eq!(tenants, vec!["gamma".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn discover_tenants_with_roots_reads_from_read_root() -> anyhow::Result<()> {
+        let state_root = TempDir::new()?;
+        let read_root = TempDir::new()?;
+        let tenants_dir = read_root.path().join("tenants");
+        fs::create_dir_all(tenants_dir.join("delta"))?;
+        let tenants =
+            discover_tenants_with_roots(state_root.path(), read_root.path(), Domain::Events)?;
+        assert_eq!(tenants, vec!["delta".to_string()]);
         Ok(())
     }
 }

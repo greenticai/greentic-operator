@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_cbor::Value as CborValue;
 use zip::result::ZipError;
 
+use crate::bundle_access::{BundleAccessHandle, operator_bundle_access_config};
 use crate::domains::{self, Domain};
 use crate::runtime_state::write_json;
 
@@ -40,8 +41,37 @@ pub struct DiscoveryOptions {
     pub cbor_only: bool,
 }
 
+pub fn bundle_cbor_only(bundle_root: &Path, bundle_read_root: &Path) -> bool {
+    bundle_root.join("greentic.demo.yaml").exists()
+        || bundle_read_root.join("greentic.demo.yaml").exists()
+}
+
 pub fn discover(root: &Path) -> anyhow::Result<DiscoveryResult> {
-    discover_with_options(root, DiscoveryOptions::default())
+    discover_bundle_with_options(root, DiscoveryOptions::default())
+}
+
+pub fn discover_bundle_with_options(
+    bundle_ref: &Path,
+    options: DiscoveryOptions,
+) -> anyhow::Result<DiscoveryResult> {
+    let bundle_access =
+        BundleAccessHandle::open(bundle_ref, &operator_bundle_access_config(bundle_ref))?;
+    discover_with_options(bundle_access.active_root(), options)
+}
+
+pub fn discover_bundle_auto(bundle_ref: &Path) -> anyhow::Result<DiscoveryResult> {
+    let bundle_access =
+        BundleAccessHandle::open(bundle_ref, &operator_bundle_access_config(bundle_ref))?;
+    discover_runtime_bundle(bundle_ref, bundle_access.active_root())
+}
+
+pub fn discover_bundle_cbor_only(bundle_ref: &Path) -> anyhow::Result<DiscoveryResult> {
+    discover_bundle_with_options(bundle_ref, DiscoveryOptions { cbor_only: true })
+}
+
+pub fn discover_validated_bundle_cbor_only(bundle_ref: &Path) -> anyhow::Result<DiscoveryResult> {
+    domains::ensure_bundle_cbor_packs(bundle_ref)?;
+    discover_bundle_cbor_only(bundle_ref)
 }
 
 pub fn discover_with_options(
@@ -96,6 +126,18 @@ pub fn discover_with_options(
         oauth: providers.iter().any(|provider| provider.domain == "oauth"),
     };
     Ok(DiscoveryResult { domains, providers })
+}
+
+pub fn discover_runtime_bundle(
+    bundle_root: &Path,
+    bundle_read_root: &Path,
+) -> anyhow::Result<DiscoveryResult> {
+    discover_with_options(
+        bundle_read_root,
+        DiscoveryOptions {
+            cbor_only: bundle_cbor_only(bundle_root, bundle_read_root),
+        },
+    )
 }
 
 pub fn persist(root: &Path, tenant: &str, discovery: &DiscoveryResult) -> anyhow::Result<()> {
@@ -256,4 +298,96 @@ fn missing_cbor_error(path: &Path) -> anyhow::Error {
         "ERROR: demo packs must be CBOR-only (.gtpack must contain manifest.cbor). Rebuild the pack with greentic-pack build (do not use --dev). Missing in {}",
         path.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bundle_cbor_only, discover_runtime_bundle, discover_validated_bundle_cbor_only};
+    use std::fs;
+    use zip::ZipWriter;
+    use zip::write::FileOptions;
+
+    #[test]
+    fn bundle_cbor_only_checks_original_and_read_roots() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bundle_root = tmp.path().join("bundle");
+        let bundle_read_root = tmp.path().join("bundle-read");
+        fs::create_dir_all(&bundle_root).expect("bundle root");
+        fs::create_dir_all(&bundle_read_root).expect("bundle read root");
+
+        assert!(!bundle_cbor_only(&bundle_root, &bundle_read_root));
+
+        fs::write(bundle_root.join("greentic.demo.yaml"), "demo: true\n").expect("demo marker");
+        assert!(bundle_cbor_only(&bundle_root, &bundle_read_root));
+
+        fs::remove_file(bundle_root.join("greentic.demo.yaml")).expect("remove demo marker");
+        fs::write(bundle_read_root.join("greentic.demo.yaml"), "demo: true\n")
+            .expect("read-root demo marker");
+        assert!(bundle_cbor_only(&bundle_root, &bundle_read_root));
+    }
+
+    #[test]
+    fn discover_runtime_bundle_uses_json_manifest_for_plain_bundle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bundle_root = tmp.path().join("bundle");
+        let bundle_read_root = tmp.path().join("bundle-read");
+        fs::create_dir_all(bundle_root.join("providers").join("messaging"))
+            .expect("bundle providers");
+        fs::create_dir_all(bundle_read_root.join("providers").join("messaging"))
+            .expect("read providers");
+
+        let pack_path = bundle_read_root
+            .join("providers")
+            .join("messaging")
+            .join("plain.gtpack");
+        let file = fs::File::create(&pack_path).expect("create gtpack");
+        let mut zip = ZipWriter::new(file);
+        zip.start_file("pack.manifest.json", FileOptions::<()>::default())
+            .expect("start manifest");
+        let manifest = serde_json::json!({
+            "meta": {
+                "pack_id": "plain-pack",
+                "entry_flows": []
+            }
+        });
+        use std::io::Write as _;
+        zip.write_all(manifest.to_string().as_bytes())
+            .expect("write manifest");
+        zip.finish().expect("finish zip");
+
+        let discovery =
+            discover_runtime_bundle(&bundle_root, &bundle_read_root).expect("runtime discovery");
+        assert_eq!(discovery.providers.len(), 1);
+        assert_eq!(discovery.providers[0].provider_id, "plain-pack");
+    }
+
+    #[test]
+    fn discover_validated_bundle_cbor_only_rejects_demo_bundle_without_cbor_manifest() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bundle_root = tmp.path();
+        fs::create_dir_all(bundle_root.join("providers").join("messaging")).expect("providers dir");
+        fs::write(bundle_root.join("greentic.demo.yaml"), "demo: true\n").expect("demo marker");
+
+        let pack_path = bundle_root
+            .join("providers")
+            .join("messaging")
+            .join("broken.gtpack");
+        let file = fs::File::create(&pack_path).expect("create gtpack");
+        let mut zip = ZipWriter::new(file);
+        zip.start_file("pack.manifest.json", FileOptions::<()>::default())
+            .expect("start manifest");
+        let manifest = serde_json::json!({
+            "meta": {
+                "pack_id": "broken-pack",
+                "entry_flows": []
+            }
+        });
+        use std::io::Write as _;
+        zip.write_all(manifest.to_string().as_bytes())
+            .expect("write manifest");
+        zip.finish().expect("finish zip");
+
+        let err = discover_validated_bundle_cbor_only(bundle_root).expect_err("should fail");
+        assert!(err.to_string().contains("manifest.cbor"));
+    }
 }

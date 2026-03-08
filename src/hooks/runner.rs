@@ -1,6 +1,4 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Context;
 use base64::Engine;
@@ -9,21 +7,16 @@ use greentic_types::cbor::canonical;
 use serde_json::{Value as JsonValue, json};
 
 use crate::demo::ingress_types::{IngressDispatchResult, IngressHttpResponse, IngressRequestV1};
-use crate::demo::runner_host::{DemoRunnerHost, OperatorContext};
+use crate::demo::runner_host::{DemoRunnerHost, OperatorContext, PhaseEventSpec};
 use crate::domains::{self, Domain, ProviderPack};
 use crate::ingress::control_directive::{
     ControlDirective, DispatchTarget, IngressReply, try_parse_control_directive,
 };
 use crate::messaging_universal::dto::{HttpInV1, HttpOutV1};
-use crate::offers::registry::{
-    HOOK_CONTRACT_CONTROL_V1, HOOK_STAGE_POST_INGRESS, OfferRegistry, discover_gtpacks,
-    load_pack_offers,
-};
+use crate::offers::registry::{HOOK_CONTRACT_CONTROL_V1, HOOK_STAGE_POST_INGRESS};
 use crate::operator_log;
 use crate::runner_exec::{self, RunRequest};
-
-static OFFER_REGISTRY_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Arc<OfferRegistry>>>> =
-    OnceLock::new();
+use crate::runtime_core::RuntimeHookDescriptor;
 
 pub fn apply_post_ingress_hooks_http(
     bundle: &Path,
@@ -117,22 +110,27 @@ fn apply_post_ingress_hooks_json(
     body: &mut HookIngressBody,
     ctx: &OperatorContext,
 ) -> anyhow::Result<()> {
+    runner_host
+        .enforce_request_policy(
+            "hook.post_ingress",
+            &[
+                "session",
+                "state",
+                "bundle_source",
+                "bundle_resolver",
+                "bundle_fs",
+            ],
+            1,
+        )
+        .map_err(|refusal| anyhow::anyhow!("runtime request refused: {}", refusal.message))?;
     if !hooks_enabled() {
         return Ok(());
     }
-    let packs_root = bundle.join("packs");
-    if !packs_root.exists() {
-        return Ok(());
-    }
-    let refs = discover_gtpacks(&packs_root)?;
-    if refs.is_empty() {
-        return Ok(());
-    }
-    let registry = cached_offer_registry(&packs_root, &refs)?;
-    emit_registry_loaded(&registry, provider, domain, ctx);
-    let selected = registry.select_hooks(HOOK_STAGE_POST_INGRESS, HOOK_CONTRACT_CONTROL_V1);
-    for offer in selected {
-        emit_hook_invoked(offer, provider, domain, ctx);
+    let selected =
+        runner_host.resolve_runtime_hook_chain(HOOK_STAGE_POST_INGRESS, HOOK_CONTRACT_CONTROL_V1);
+    emit_runtime_hook_registry_loaded(runner_host, &selected, provider, domain, ctx);
+    for offer in &selected {
+        emit_hook_invoked(runner_host, offer, provider, domain, ctx);
         let payload = canonical::to_canonical_cbor(&json!({
             "stage": HOOK_STAGE_POST_INGRESS,
             "contract": HOOK_CONTRACT_CONTROL_V1,
@@ -150,16 +148,24 @@ fn apply_post_ingress_hooks_json(
         }))
         .with_context(|| "encode hook post_ingress payload")?;
 
-        let pack = offer_pack(offer.pack_ref.clone(), offer.pack_id.clone())?;
+        let pack = offer_pack(offer.pack_path.clone(), offer.provider_pack.clone())?;
         let outcome = runner_host.invoke_provider_component_op_direct(
             domain,
             &pack,
-            &offer.pack_id,
-            &offer.provider_op,
+            &offer.provider_pack,
+            &offer.entrypoint,
             &payload,
             ctx,
         )?;
         if !outcome.success {
+            emit_hook_invocation_failed(
+                runner_host,
+                offer,
+                provider,
+                domain,
+                ctx,
+                outcome.error.as_deref().unwrap_or("unknown error"),
+            );
             operator_log::warn(
                 module_path!(),
                 format!(
@@ -174,7 +180,14 @@ fn apply_post_ingress_hooks_json(
             continue;
         };
         let Some(directive) = try_parse_control_directive(&output) else {
-            emit_hook_parse_error(offer, provider, domain, ctx, "missing_or_invalid_action");
+            emit_hook_parse_error(
+                runner_host,
+                offer,
+                provider,
+                domain,
+                ctx,
+                "missing_or_invalid_action",
+            );
             continue;
         };
         if matches!(directive, ControlDirective::Continue) {
@@ -182,13 +195,28 @@ fn apply_post_ingress_hooks_json(
         }
         let action = directive_action(&directive);
         let action_target = directive_target_for_audit(&directive);
-        match apply_control_directive(bundle, domain, body, ctx, directive) {
+        match apply_control_directive(bundle, runner_host, domain, body, ctx, directive) {
             Ok(()) => {
-                emit_hook_applied(offer, provider, domain, ctx, action, action_target);
+                emit_hook_applied(
+                    runner_host,
+                    offer,
+                    provider,
+                    domain,
+                    ctx,
+                    action,
+                    action_target,
+                );
                 break;
             }
             Err(err) => {
-                emit_hook_parse_error(offer, provider, domain, ctx, &format!("apply_failed:{err}"));
+                emit_hook_parse_error(
+                    runner_host,
+                    offer,
+                    provider,
+                    domain,
+                    ctx,
+                    &format!("apply_failed:{err}"),
+                );
                 continue;
             }
         }
@@ -198,6 +226,7 @@ fn apply_post_ingress_hooks_json(
 
 fn apply_control_directive(
     bundle: &Path,
+    runner_host: &DemoRunnerHost,
     domain: Domain,
     body: &mut HookIngressBody,
     ctx: &OperatorContext,
@@ -209,7 +238,9 @@ fn apply_control_directive(
         body,
         ctx,
         directive,
-        dispatch_to_target,
+        |bundle, domain, body, ctx, target| {
+            dispatch_to_target(bundle, runner_host, domain, body, ctx, target)
+        },
     )
 }
 
@@ -295,14 +326,15 @@ fn apply_reply(
 }
 
 fn dispatch_to_target(
-    bundle: &Path,
+    _bundle: &Path,
+    runner_host: &DemoRunnerHost,
     domain: Domain,
     body: &HookIngressBody,
     ctx: &OperatorContext,
     target: &DispatchTarget,
 ) -> anyhow::Result<()> {
     ensure_dispatch_target_safe(target)?;
-    let pack_path = resolve_dispatch_pack_path(bundle, &target.pack)?;
+    let pack_path = runner_host.resolve_bundle_pack_path(&target.pack)?;
     let meta = domains::read_pack_meta(&pack_path)?;
     let flow_id = match target.flow.as_deref() {
         Some(flow) => flow.to_string(),
@@ -329,7 +361,8 @@ fn dispatch_to_target(
         }
     });
     let request = RunRequest {
-        root: bundle.to_path_buf(),
+        root: runner_host.bundle_runtime_root(),
+        run_dir: None,
         domain,
         pack_path: pack_path.clone(),
         pack_label: meta.pack_id,
@@ -342,39 +375,6 @@ fn dispatch_to_target(
     runner_exec::run_provider_pack_flow(request)
         .with_context(|| format!("hook dispatch failed for {}", pack_path.display()))?;
     Ok(())
-}
-
-fn resolve_dispatch_pack_path(bundle: &Path, target_pack: &str) -> anyhow::Result<PathBuf> {
-    let packs_root = bundle.join("packs");
-    let candidates = [
-        PathBuf::from(target_pack),
-        packs_root.join(target_pack),
-        packs_root.join(format!("{target_pack}.gtpack")),
-    ];
-    for candidate in candidates {
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    for path in discover_gtpacks(&packs_root)? {
-        if path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .map(|value| value == target_pack)
-            .unwrap_or(false)
-        {
-            return Ok(path);
-        }
-        let parsed = load_pack_offers(&path)?;
-        if parsed.pack_id == target_pack {
-            return Ok(path);
-        }
-    }
-    anyhow::bail!(
-        "dispatch target pack {} not found under {}",
-        target_pack,
-        packs_root.display()
-    );
 }
 
 fn offer_pack(path: PathBuf, pack_id: String) -> anyhow::Result<ProviderPack> {
@@ -393,22 +393,6 @@ fn offer_pack(path: PathBuf, pack_id: String) -> anyhow::Result<ProviderPack> {
 
 fn provider_from_http_in(request: &HttpInV1) -> &str {
     request.provider.as_str()
-}
-
-fn cached_offer_registry(
-    packs_root: &Path,
-    refs: &[PathBuf],
-) -> anyhow::Result<Arc<OfferRegistry>> {
-    let cache = OFFER_REGISTRY_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut guard = cache
-        .lock()
-        .map_err(|_| anyhow::anyhow!("offer registry cache lock poisoned"))?;
-    if let Some(existing) = guard.get(packs_root) {
-        return Ok(existing.clone());
-    }
-    let registry = Arc::new(OfferRegistry::from_pack_refs(refs)?);
-    guard.insert(packs_root.to_path_buf(), registry.clone());
-    Ok(registry)
 }
 
 fn hooks_enabled() -> bool {
@@ -470,40 +454,48 @@ fn is_safe_segment(value: &str) -> bool {
         && !value.starts_with('.')
 }
 
-fn emit_registry_loaded(
-    registry: &OfferRegistry,
+fn emit_runtime_hook_registry_loaded(
+    runner_host: &DemoRunnerHost,
+    hooks: &[RuntimeHookDescriptor],
     provider: &str,
     domain: Domain,
     ctx: &OperatorContext,
 ) {
-    let kind_counts = registry.kind_counts();
-    let hooks = registry.hook_counts_by_stage_contract();
-    let subs = registry.subs_counts_by_contract();
     let payload = json!({
-        "event": "offer.registry.loaded",
+        "event": "runtime.hook_chain.loaded",
         "domain": domains::domain_name(domain),
         "provider": provider,
         "tenant": ctx.tenant,
         "team": ctx.team.as_deref().unwrap_or("default"),
         "correlation_id": ctx.correlation_id,
-        "packs_total": registry.packs_total(),
-        "offers_total": registry.offers_total(),
-        "kind_counts": kind_counts,
-        "hook_counts": hooks.iter().map(|(stage, contract, count)| json!({
-            "stage": stage,
-            "contract": contract,
-            "count": count
-        })).collect::<Vec<_>>(),
-        "subs_counts": subs.iter().map(|(contract, count)| json!({
-            "contract": contract,
-            "count": count
-        })).collect::<Vec<_>>(),
+        "stage": HOOK_STAGE_POST_INGRESS,
+        "contract": HOOK_CONTRACT_CONTROL_V1,
+        "hook_count": hooks.len(),
+        "hooks": hooks
+            .iter()
+            .map(|hook| json!({
+                "offer_key": hook.offer_key,
+                "pack_id": hook.provider_pack,
+                "provider_op": hook.entrypoint,
+                "priority": hook.priority,
+            }))
+            .collect::<Vec<_>>(),
     });
     operator_log::info(module_path!(), payload.to_string());
+    runner_host.publish_phase_event(PhaseEventSpec {
+        event_type: "hook.chain_loaded",
+        severity: "info",
+        outcome: Some("loaded"),
+        ctx,
+        pack_id: Some(provider),
+        flow_id: Some(HOOK_STAGE_POST_INGRESS),
+        payload,
+    });
 }
 
 fn emit_hook_invoked(
-    offer: &crate::offers::registry::Offer,
+    runner_host: &DemoRunnerHost,
+    offer: &RuntimeHookDescriptor,
     provider: &str,
     domain: Domain,
     ctx: &OperatorContext,
@@ -511,22 +503,31 @@ fn emit_hook_invoked(
     let payload = json!({
         "event": "hook.invoked",
         "offer_key": offer.offer_key,
-        "pack_id": offer.pack_id,
-        "offer_id": offer.id,
+        "pack_id": offer.provider_pack,
         "stage": HOOK_STAGE_POST_INGRESS,
         "contract": HOOK_CONTRACT_CONTROL_V1,
         "provider": provider,
-        "provider_op": offer.provider_op,
+        "provider_op": offer.entrypoint,
         "domain": domains::domain_name(domain),
         "tenant": ctx.tenant,
         "team": ctx.team.as_deref().unwrap_or("default"),
         "correlation_id": ctx.correlation_id,
     });
     operator_log::info(module_path!(), payload.to_string());
+    runner_host.publish_phase_event(PhaseEventSpec {
+        event_type: "hook.invoked",
+        severity: "info",
+        outcome: Some("invoked"),
+        ctx,
+        pack_id: Some(&offer.provider_pack),
+        flow_id: Some(&offer.entrypoint),
+        payload,
+    });
 }
 
 fn emit_hook_applied(
-    offer: &crate::offers::registry::Offer,
+    runner_host: &DemoRunnerHost,
+    offer: &RuntimeHookDescriptor,
     provider: &str,
     domain: Domain,
     ctx: &OperatorContext,
@@ -536,8 +537,7 @@ fn emit_hook_applied(
     let payload = json!({
         "event": "hook.directive.applied",
         "offer_key": offer.offer_key,
-        "pack_id": offer.pack_id,
-        "offer_id": offer.id,
+        "pack_id": offer.provider_pack,
         "action": action,
         "target": action_target,
         "provider": provider,
@@ -547,10 +547,20 @@ fn emit_hook_applied(
         "correlation_id": ctx.correlation_id,
     });
     operator_log::info(module_path!(), payload.to_string());
+    runner_host.publish_phase_event(PhaseEventSpec {
+        event_type: "hook.directive_applied",
+        severity: "info",
+        outcome: Some(action),
+        ctx,
+        pack_id: Some(&offer.provider_pack),
+        flow_id: Some(&offer.entrypoint),
+        payload,
+    });
 }
 
 fn emit_hook_parse_error(
-    offer: &crate::offers::registry::Offer,
+    runner_host: &DemoRunnerHost,
+    offer: &RuntimeHookDescriptor,
     provider: &str,
     domain: Domain,
     ctx: &OperatorContext,
@@ -559,8 +569,7 @@ fn emit_hook_parse_error(
     let payload = json!({
         "event": "hook.directive.parse_error",
         "offer_key": offer.offer_key,
-        "pack_id": offer.pack_id,
-        "offer_id": offer.id,
+        "pack_id": offer.provider_pack,
         "provider": provider,
         "domain": domains::domain_name(domain),
         "tenant": ctx.tenant,
@@ -569,6 +578,47 @@ fn emit_hook_parse_error(
         "error": err,
     });
     operator_log::warn(module_path!(), payload.to_string());
+    runner_host.publish_phase_event(PhaseEventSpec {
+        event_type: "hook.directive_error",
+        severity: "warn",
+        outcome: Some("error"),
+        ctx,
+        pack_id: Some(&offer.provider_pack),
+        flow_id: Some(&offer.entrypoint),
+        payload,
+    });
+}
+
+fn emit_hook_invocation_failed(
+    runner_host: &DemoRunnerHost,
+    offer: &RuntimeHookDescriptor,
+    provider: &str,
+    domain: Domain,
+    ctx: &OperatorContext,
+    err: &str,
+) {
+    let payload = json!({
+        "event": "hook.invocation.failed",
+        "offer_key": offer.offer_key,
+        "pack_id": offer.provider_pack,
+        "provider": provider,
+        "provider_op": offer.entrypoint,
+        "domain": domains::domain_name(domain),
+        "tenant": ctx.tenant,
+        "team": ctx.team.as_deref().unwrap_or("default"),
+        "correlation_id": ctx.correlation_id,
+        "error": err,
+    });
+    operator_log::warn(module_path!(), payload.to_string());
+    runner_host.publish_phase_event(PhaseEventSpec {
+        event_type: "hook.invocation_failed",
+        severity: "warn",
+        outcome: Some("failed"),
+        ctx,
+        pack_id: Some(&offer.provider_pack),
+        flow_id: Some(&offer.entrypoint),
+        payload,
+    });
 }
 
 fn directive_action(directive: &ControlDirective) -> &'static str {
@@ -596,7 +646,16 @@ fn directive_target_for_audit(directive: &ControlDirective) -> Option<JsonValue>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
     use serde_json::json;
+
+    use crate::runtime_core::{
+        RuntimeCore, RuntimeEvent, RuntimeHealth, RuntimeHealthStatus, ScopedStateKey,
+        StateProvider,
+    };
 
     fn test_ctx() -> OperatorContext {
         OperatorContext {
@@ -613,6 +672,133 @@ mod tests {
             response_headers: vec![("a".to_string(), "b".to_string())],
             response_body: Some(b"ok".to_vec()),
             events: vec![json!({"event":"x"})],
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingTelemetryProvider {
+        events: Mutex<Vec<RuntimeEvent>>,
+    }
+
+    #[async_trait]
+    impl crate::runtime_core::TelemetryProvider for RecordingTelemetryProvider {
+        async fn emit(&self, event: RuntimeEvent) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .expect("recording telemetry provider lock poisoned")
+                .push(event);
+            Ok(())
+        }
+
+        async fn health(&self) -> anyhow::Result<RuntimeHealth> {
+            Ok(RuntimeHealth {
+                status: RuntimeHealthStatus::Available,
+                reason: None,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingObserverSink {
+        events: Mutex<Vec<RuntimeEvent>>,
+    }
+
+    #[async_trait]
+    impl crate::runtime_core::ObserverHookSink for RecordingObserverSink {
+        async fn publish(&self, event: RuntimeEvent) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .expect("recording observer sink lock poisoned")
+                .push(event);
+            Ok(())
+        }
+
+        async fn health(&self) -> anyhow::Result<RuntimeHealth> {
+            Ok(RuntimeHealth {
+                status: RuntimeHealthStatus::Available,
+                reason: None,
+            })
+        }
+    }
+
+    struct DegradedStateProvider;
+
+    #[async_trait]
+    impl StateProvider for DegradedStateProvider {
+        async fn get(&self, _key: &ScopedStateKey) -> anyhow::Result<Option<JsonValue>> {
+            Ok(None)
+        }
+
+        async fn put(&self, _key: &ScopedStateKey, _value: JsonValue) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn delete(&self, _key: &ScopedStateKey) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn health(&self) -> anyhow::Result<RuntimeHealth> {
+            Ok(RuntimeHealth {
+                status: RuntimeHealthStatus::Degraded,
+                reason: Some("state provider latency high".to_string()),
+            })
+        }
+    }
+
+    fn build_host_with_recording_sinks() -> (
+        DemoRunnerHost,
+        Arc<RecordingTelemetryProvider>,
+        Arc<RecordingObserverSink>,
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let discovery = crate::discovery::DiscoveryResult {
+            domains: crate::discovery::DetectedDomains {
+                messaging: false,
+                events: false,
+                oauth: false,
+            },
+            providers: Vec::new(),
+        };
+        let secrets_handle =
+            crate::secrets_gate::resolve_secrets_manager(tmp.path(), "default", None)
+                .expect("resolve secrets manager");
+        let host = DemoRunnerHost::new(
+            tmp.path().to_path_buf(),
+            &discovery,
+            None,
+            secrets_handle,
+            false,
+        )
+        .expect("build host");
+
+        let telemetry = Arc::new(RecordingTelemetryProvider::default());
+        let observer = Arc::new(RecordingObserverSink::default());
+        let current = host.runtime_core();
+        let mut seams = current.seams().clone();
+        seams.telemetry_provider = Some(telemetry.clone());
+        seams.observer_sink = Some(observer.clone());
+        host.replace_runtime_core_for_test(RuntimeCore::new(
+            current.registry().clone(),
+            seams,
+            current.wiring_plan().clone(),
+        ));
+        (host, telemetry, observer)
+    }
+
+    fn sample_hook() -> RuntimeHookDescriptor {
+        RuntimeHookDescriptor {
+            offer_key: "observer.pack::post_ingress.audit".to_string(),
+            provider_pack: "observer.pack".to_string(),
+            pack_path: PathBuf::from("packs/observer.pack.gtpack"),
+            stage: HOOK_STAGE_POST_INGRESS.to_string(),
+            contract_id: HOOK_CONTRACT_CONTROL_V1.to_string(),
+            entrypoint: "observer.post_ingress".to_string(),
+            priority: 10,
+            lifecycle_state: crate::runtime_core::RuntimeLifecycleState::Active,
+            health: RuntimeHealth {
+                status: RuntimeHealthStatus::Available,
+                reason: None,
+            },
         }
     }
 
@@ -641,6 +827,177 @@ mod tests {
             body.events.clone(),
         );
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn emit_runtime_hook_registry_loaded_publishes_phase_event() {
+        let (host, telemetry, observer) = build_host_with_recording_sinks();
+        let hooks = vec![sample_hook()];
+
+        emit_runtime_hook_registry_loaded(
+            &host,
+            &hooks,
+            "telegram",
+            Domain::Messaging,
+            &test_ctx(),
+        );
+
+        let telemetry_events = telemetry.events.lock().expect("telemetry events");
+        let observer_events = observer.events.lock().expect("observer events");
+        let event = telemetry_events.last().expect("hook chain loaded event");
+        assert_eq!(observer_events.last(), Some(event));
+        assert_eq!(event.event_type, "hook.chain_loaded");
+        assert_eq!(event.outcome.as_deref(), Some("loaded"));
+        assert_eq!(event.pack_id.as_deref(), Some("telegram"));
+        assert_eq!(event.flow_id.as_deref(), Some(HOOK_STAGE_POST_INGRESS));
+        assert_eq!(
+            event.payload.get("hook_count").and_then(JsonValue::as_u64),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn emit_hook_applied_publishes_phase_event() {
+        let (host, telemetry, observer) = build_host_with_recording_sinks();
+        let offer = sample_hook();
+        emit_hook_applied(
+            &host,
+            &offer,
+            "telegram",
+            Domain::Messaging,
+            &test_ctx(),
+            "dispatch",
+            Some(json!({"pack": "app.pack"})),
+        );
+
+        let telemetry_events = telemetry.events.lock().expect("telemetry events");
+        let observer_events = observer.events.lock().expect("observer events");
+        let event = telemetry_events.last().expect("hook applied event");
+        assert_eq!(observer_events.last(), Some(event));
+        assert_eq!(event.event_type, "hook.directive_applied");
+        assert_eq!(event.outcome.as_deref(), Some("dispatch"));
+        assert_eq!(event.pack_id.as_deref(), Some("observer.pack"));
+        assert_eq!(event.flow_id.as_deref(), Some("observer.post_ingress"));
+    }
+
+    #[test]
+    fn emit_hook_invocation_failed_publishes_phase_event() {
+        let (host, telemetry, observer) = build_host_with_recording_sinks();
+        let offer = sample_hook();
+        emit_hook_invocation_failed(
+            &host,
+            &offer,
+            "telegram",
+            Domain::Messaging,
+            &test_ctx(),
+            "boom",
+        );
+
+        let telemetry_events = telemetry.events.lock().expect("telemetry events");
+        let observer_events = observer.events.lock().expect("observer events");
+        let event = telemetry_events.last().expect("hook failed event");
+        assert_eq!(observer_events.last(), Some(event));
+        assert_eq!(event.event_type, "hook.invocation_failed");
+        assert_eq!(event.outcome.as_deref(), Some("failed"));
+        assert_eq!(
+            event.payload.get("error").and_then(JsonValue::as_str),
+            Some("boom")
+        );
+    }
+
+    #[test]
+    fn emit_hook_parse_error_publishes_phase_event() {
+        let (host, telemetry, observer) = build_host_with_recording_sinks();
+        let offer = sample_hook();
+        emit_hook_parse_error(
+            &host,
+            &offer,
+            "telegram",
+            Domain::Messaging,
+            &test_ctx(),
+            "missing_or_invalid_action",
+        );
+
+        let telemetry_events = telemetry.events.lock().expect("telemetry events");
+        let observer_events = observer.events.lock().expect("observer events");
+        let event = telemetry_events.last().expect("hook parse error event");
+        assert_eq!(observer_events.last(), Some(event));
+        assert_eq!(event.event_type, "hook.directive_error");
+        assert_eq!(event.outcome.as_deref(), Some("error"));
+        assert_eq!(event.pack_id.as_deref(), Some("observer.pack"));
+        assert_eq!(event.flow_id.as_deref(), Some("observer.post_ingress"));
+        assert_eq!(
+            event.payload.get("error").and_then(JsonValue::as_str),
+            Some("missing_or_invalid_action")
+        );
+    }
+
+    #[test]
+    fn apply_post_ingress_hooks_refuses_when_safe_mode_blocks_hooks() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let discovery = crate::discovery::DiscoveryResult {
+            domains: crate::discovery::DetectedDomains {
+                messaging: false,
+                events: false,
+                oauth: false,
+            },
+            providers: Vec::new(),
+        };
+        let secrets_handle =
+            crate::secrets_gate::resolve_secrets_manager(tmp.path(), "default", None)
+                .expect("resolve secrets manager");
+        let host = DemoRunnerHost::new(
+            tmp.path().to_path_buf(),
+            &discovery,
+            None,
+            secrets_handle,
+            false,
+        )
+        .expect("build host");
+
+        let current = host.runtime_core();
+        let mut seams = current.seams().clone();
+        seams.state_provider = Some(Arc::new(DegradedStateProvider));
+        host.replace_runtime_core_for_test(RuntimeCore::new(
+            current.registry().clone(),
+            seams,
+            current.wiring_plan().clone(),
+        ));
+
+        let request = IngressRequestV1 {
+            v: 1,
+            domain: "messaging".to_string(),
+            provider: "telegram".to_string(),
+            handler: None,
+            tenant: "demo".to_string(),
+            team: Some("default".to_string()),
+            method: "POST".to_string(),
+            path: "/v1/messaging/ingress/telegram/demo/default".to_string(),
+            query: Vec::new(),
+            headers: Vec::new(),
+            body: br#"{}"#.to_vec(),
+            correlation_id: Some("corr-1".to_string()),
+            remote_addr: None,
+        };
+        let mut result = IngressDispatchResult {
+            response: IngressHttpResponse {
+                status: 200,
+                headers: vec![("a".to_string(), "b".to_string())],
+                body: Some(b"ok".to_vec()),
+            },
+            events: Vec::new(),
+            messaging_envelopes: Vec::new(),
+        };
+        let err = apply_post_ingress_hooks_dispatch(
+            tmp.path(),
+            &host,
+            Domain::Messaging,
+            &request,
+            &mut result,
+            &test_ctx(),
+        )
+        .expect_err("safe mode should refuse post-ingress hooks");
+        assert!(err.to_string().contains("runtime request refused"));
     }
 
     #[test]
