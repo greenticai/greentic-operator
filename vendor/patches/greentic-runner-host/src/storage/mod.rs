@@ -15,6 +15,10 @@ pub fn new_state_store() -> DynStateStore {
     state::new_state_store()
 }
 
+pub fn new_redis_state_store(redis_url: &str) -> Result<DynStateStore, greentic_types::GreenticError> {
+    state::new_redis_state_store(redis_url)
+}
+
 pub fn session_host_from(store: DynSessionStore) -> Arc<dyn SessionHost> {
     session::session_host_from(store)
 }

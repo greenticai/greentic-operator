@@ -2044,12 +2044,18 @@ impl DemoUpArgs {
             );
 
             // --- Telemetry capability bootstrap ---
+            let telemetry_answers = self
+                .setup_input
+                .as_ref()
+                .and_then(|path| load_setup_input(path).ok())
+                .and_then(|raw| extract_telemetry_setup_answers(&raw));
             match crate::capability_bootstrap::try_upgrade_telemetry(
                 &bundle,
                 &capability_runner,
                 &tenant_ref,
                 team_ref.as_deref(),
                 None,
+                telemetry_answers.as_ref(),
             ) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -2059,6 +2065,29 @@ impl DemoUpArgs {
                     tracing::warn!(error = %e, "telemetry capability bootstrap failed — using default tracing");
                 }
             }
+
+            // --- State store capability bootstrap (in-memory → Redis) ---
+            let state_redis_answers = self
+                .setup_input
+                .as_ref()
+                .and_then(|path| load_setup_input(path).ok())
+                .and_then(|raw| extract_state_redis_setup_answers(&raw));
+            let upgraded_state_store =
+                match crate::capability_bootstrap::try_upgrade_state_store(
+                    &bundle,
+                    &capability_runner,
+                    &capability_secrets_handle,
+                    &tenant_ref,
+                    team_ref.as_deref(),
+                    None,
+                    state_redis_answers.as_ref(),
+                ) {
+                    Ok(store) => store,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "state store capability bootstrap failed — using in-memory");
+                        None
+                    }
+                };
 
             let mut cloudflared_config = match self.cloudflared {
                 CloudflaredModeArg::Off => None,
@@ -2267,6 +2296,7 @@ impl DemoUpArgs {
                     self.runner_binary.clone(),
                     debug_enabled,
                     ingress_secrets_handle.clone(),
+                    upgraded_state_store.clone(),
                 ) {
                     Ok(server) => {
                         println!(
@@ -4573,6 +4603,7 @@ impl DemoSendArgs {
             &self.tenant,
             team,
             None,
+            None,
         ) {
             tracing::warn!(error = %e, "telemetry capability bootstrap failed");
         }
@@ -4888,6 +4919,13 @@ fn run_provider_component_op(
     op: &str,
     payload: serde_json::Value,
 ) -> anyhow::Result<FlowOutcome> {
+    let _span = tracing::info_span!(
+        "provider_component_op",
+        provider = %provider_id,
+        op = %op,
+        tenant = %ctx.tenant,
+    )
+    .entered();
     let bytes = serde_json::to_vec(&payload)?;
     let outcome = runner_host.invoke_provider_component_op_direct(
         Domain::Messaging,
@@ -5574,6 +5612,7 @@ fn start_demo_ingress_server(
     runner_binary: Option<PathBuf>,
     debug_enabled: bool,
     secrets_handle: SecretsManagerHandle,
+    state_store_override: Option<greentic_runner_host::storage::DynStateStore>,
 ) -> anyhow::Result<HttpIngressServer> {
     let addr = format!(
         "{}:{}",
@@ -5582,13 +5621,17 @@ fn start_demo_ingress_server(
     let bind_addr: SocketAddr = addr
         .parse()
         .with_context(|| format!("invalid gateway listen address {addr}"))?;
-    let runner_host = Arc::new(DemoRunnerHost::new(
+    let mut host = DemoRunnerHost::new(
         bundle.to_path_buf(),
         discovery,
         runner_binary,
         secrets_handle.clone(),
         debug_enabled,
-    )?);
+    )?;
+    if let Some(store) = state_store_override {
+        host.set_state_store(store);
+    }
+    let runner_host = Arc::new(host);
     // Extract webchat SPA GUI assets from messaging-webchat.gtpack if present.
     // Use localhost instead of 0.0.0.0 so browser can reach the URL.
     let host = if bind_addr.ip().is_unspecified() {
@@ -6024,6 +6067,87 @@ fn demo_debug_enabled() -> bool {
         std::env::var("GREENTIC_OPERATOR_DEMO_DEBUG").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
     )
+}
+
+/// Extract telemetry setup answers from a setup-input file.
+///
+/// Supports multiple file formats:
+/// - Flat: `{ "telemetry-otlp": { "preset": "azure", ... } }` (setup-input style)
+/// - Wizard: `{ "wizard_answers": { "setup_answers": { "telemetry-otlp": { ... } } } }`
+/// - Direct: `{ "preset": "azure", ... }` (single-provider file)
+fn extract_telemetry_setup_answers(raw: &serde_json::Value) -> Option<serde_json::Value> {
+    const TELEMETRY_PACK_ID: &str = "telemetry-otlp";
+
+    let map = raw.as_object()?;
+
+    // 1. Direct key: { "telemetry-otlp": { ... } }
+    if let Some(answers) = map.get(TELEMETRY_PACK_ID) {
+        if answers.as_object().is_some_and(|m| !m.is_empty()) {
+            return Some(answers.clone());
+        }
+    }
+
+    // 2. Wizard answers format: { "wizard_answers": { "setup_answers": { "telemetry-otlp": { ... } } } }
+    if let Some(wizard) = map.get("wizard_answers").and_then(|v| v.as_object()) {
+        if let Some(setup) = wizard.get("setup_answers").and_then(|v| v.as_object()) {
+            if let Some(answers) = setup.get(TELEMETRY_PACK_ID) {
+                if answers.as_object().is_some_and(|m| !m.is_empty()) {
+                    return Some(answers.clone());
+                }
+            }
+        }
+    }
+
+    // 3. setup_answers at top level: { "setup_answers": { "telemetry-otlp": { ... } } }
+    if let Some(setup) = map.get("setup_answers").and_then(|v| v.as_object()) {
+        if let Some(answers) = setup.get(TELEMETRY_PACK_ID) {
+            if answers.as_object().is_some_and(|m| !m.is_empty()) {
+                return Some(answers.clone());
+            }
+        }
+    }
+
+    // 4. Direct config: { "preset": "azure", "otlp_endpoint": "...", ... }
+    if map.contains_key("preset") || map.contains_key("otlp_endpoint") {
+        return Some(raw.clone());
+    }
+
+    None
+}
+
+fn extract_state_redis_setup_answers(raw: &serde_json::Value) -> Option<serde_json::Value> {
+    const STATE_REDIS_PACK_ID: &str = "state-redis";
+
+    let map = raw.as_object()?;
+
+    // 1. Direct key: { "state-redis": { ... } }
+    if let Some(answers) = map.get(STATE_REDIS_PACK_ID) {
+        if answers.as_object().is_some_and(|m| !m.is_empty()) {
+            return Some(answers.clone());
+        }
+    }
+
+    // 2. Wizard answers format: { "wizard_answers": { "setup_answers": { "state-redis": { ... } } } }
+    if let Some(wizard) = map.get("wizard_answers").and_then(|v| v.as_object()) {
+        if let Some(setup) = wizard.get("setup_answers").and_then(|v| v.as_object()) {
+            if let Some(answers) = setup.get(STATE_REDIS_PACK_ID) {
+                if answers.as_object().is_some_and(|m| !m.is_empty()) {
+                    return Some(answers.clone());
+                }
+            }
+        }
+    }
+
+    // 3. setup_answers at top level: { "setup_answers": { "state-redis": { ... } } }
+    if let Some(setup) = map.get("setup_answers").and_then(|v| v.as_object()) {
+        if let Some(answers) = setup.get(STATE_REDIS_PACK_ID) {
+            if answers.as_object().is_some_and(|m| !m.is_empty()) {
+                return Some(answers.clone());
+            }
+        }
+    }
+
+    None
 }
 
 #[allow(clippy::too_many_arguments)]

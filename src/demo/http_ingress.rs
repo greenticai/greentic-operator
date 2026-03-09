@@ -319,6 +319,11 @@ async fn handle_request_inner(
     }
 
     let path = req.uri().path().to_string();
+    tracing::info!(
+        method = %req.method(),
+        path = %path,
+        "http_ingress request"
+    );
 
     // Onboard API routes: /api/onboard/*
     if path.starts_with("/api/onboard") {
@@ -434,30 +439,30 @@ async fn handle_request_inner(
         remote_addr: None,
     };
 
-    let _ingress_span = info_span!(
-        "http.ingress",
-        http.method = %method,
-        http.path = %path,
-        messaging.provider = %parsed.provider,
-        tenant = %parsed.tenant,
-        team = %parsed.team,
-        otel.kind = "server",
-    )
-    .entered();
-
-    let result = dispatch_http_ingress(
-        state.runner_host.as_ref(),
-        domain,
-        &ingress_request,
-        &context,
-    )
-    .map_err(|err| {
-        operator_log::error(
-            module_path!(),
-            format!("[ingress] dispatch failed provider={}: {err}", parsed.provider),
-        );
-        error_response(StatusCode::BAD_GATEWAY, err.to_string())
-    })?;
+    let result = {
+        let _dispatch_span = tracing::info_span!(
+            "ingress_dispatch",
+            provider = %parsed.provider,
+            tenant = %parsed.tenant,
+            team = %parsed.team,
+            domain = %domains::domain_name(domain),
+        )
+        .entered();
+        dispatch_http_ingress(
+            state.runner_host.as_ref(),
+            domain,
+            &ingress_request,
+            &context,
+        )
+        .map_err(|err| {
+            tracing::error!(provider = %parsed.provider, error = %err, "ingress dispatch failed");
+            operator_log::error(
+                module_path!(),
+                format!("[ingress] dispatch failed provider={}: {err}", parsed.provider),
+            );
+            error_response(StatusCode::BAD_GATEWAY, err.to_string())
+        })?
+    };
     operator_log::info(
         module_path!(),
         format!(
@@ -561,15 +566,14 @@ fn route_messaging_envelopes(
     bot_activities: Option<&BotActivityStore>,
     tg_form_store: Option<&TelegramFormStore>,
 ) -> anyhow::Result<()> {
-    let _span = info_span!(
-        "messaging.pipeline",
-        messaging.provider = %provider,
+    let _span = tracing::info_span!(
+        "messaging_pipeline",
+        provider = %provider,
         tenant = %ctx.tenant,
-        team = %ctx.team.as_deref().unwrap_or("default"),
+        team = ?ctx.team,
         envelope_count = envelopes.len(),
     )
     .entered();
-
     let team = ctx.team.as_deref();
     let app_pack_result = app::resolve_app_pack_path(bundle, &ctx.tenant, team, None);
     eprintln!("[directline] resolve_app_pack_path tenant={} team={:?} result={:?}", ctx.tenant, team, app_pack_result.as_ref().map(|p| p.display().to_string()));

@@ -1,4 +1,4 @@
-//! Capability bootstrap: discovery report and telemetry upgrade.
+//! Capability bootstrap: discovery report, telemetry upgrade, and state store upgrade.
 //!
 //! Extracted from `cli.rs` to keep the CLI module focused on argument
 //! parsing and command dispatch.
@@ -12,7 +12,9 @@ use crate::demo::runner_host::{DemoRunnerHost, OperatorContext};
 use crate::domains::Domain;
 use crate::operator_i18n;
 use crate::operator_log;
+use crate::secrets_gate::SecretsManagerHandle;
 use crate::secrets_setup::{SecretsSetup, resolve_env};
+use greentic_runner_host::storage::DynStateStore;
 
 // ---------------------------------------------------------------------------
 // Capability expectations & bootstrap report
@@ -167,6 +169,11 @@ const TELEMETRY_CONFIGURE_OP: &str = "telemetry.configure";
 /// Seed secrets for the telemetry capability pack, invoke the WASM component,
 /// and initialize the OTel pipeline with the returned config.
 ///
+/// When `setup_answers` is provided (e.g. from `--setup-input`), the values are
+/// persisted to the dev secrets store so the WASM component can read them via
+/// `read_secret()`.  Without this step the component receives empty secrets and
+/// the exporter has no valid connection string / endpoint.
+///
 /// Returns `Ok(true)` if telemetry was upgraded, `Ok(false)` if no capability found.
 pub fn try_upgrade_telemetry(
     bundle: &Path,
@@ -174,6 +181,7 @@ pub fn try_upgrade_telemetry(
     tenant: &str,
     team: Option<&str>,
     env_override: Option<&str>,
+    setup_answers: Option<&serde_json::Value>,
 ) -> Result<bool> {
     let env = resolve_env(env_override);
     let scope = ResolveScope {
@@ -211,12 +219,62 @@ pub fn try_upgrade_telemetry(
         }
     }
 
-    // 3. Invoke the WASM component
+    // 2b. Persist setup_answers as secrets so the WASM component can read them.
+    //     The wizard execute flow only persists secrets for domain providers
+    //     (Messaging/Events/Secrets/OAuth) but capability packs like
+    //     telemetry-otlp are not in any domain, so their config values never
+    //     reach the dev store.
+    if let Some(answers) = setup_answers {
+        if answers.as_object().is_some_and(|m| !m.is_empty()) {
+            let pack_path_ref = Some(binding.pack_path.as_path());
+            let persist_rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
+            if let Ok(rt) = persist_rt {
+                match rt.block_on(crate::qa_persist::persist_all_config_as_secrets(
+                    bundle,
+                    &env,
+                    tenant,
+                    team,
+                    &binding.pack_id,
+                    answers,
+                    pack_path_ref,
+                )) {
+                    Ok(saved) if !saved.is_empty() => {
+                        tracing::info!(
+                            pack_id = %binding.pack_id,
+                            count = saved.len(),
+                            keys = ?saved,
+                            "persisted telemetry setup answers as secrets"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            pack_id = %binding.pack_id,
+                            error = %e,
+                            "failed to persist telemetry setup answers"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // 3. Mark the telemetry capability as ready before invoking.
+    //    The telemetry bootstrap runs before the server starts, so there is
+    //    no prior QA wizard step that would create the install record.
+    //    Without this, invoke_capability returns capability_not_installed.
     let ctx = OperatorContext {
         tenant: tenant.to_string(),
         team: team.map(|t| t.to_string()),
         correlation_id: None,
     };
+    if let Err(e) = runner_host.mark_capability_ready(&ctx, &binding) {
+        tracing::warn!(error = %e, "failed to mark telemetry capability as ready (non-fatal)");
+    }
+
+    // 4. Invoke the WASM component
     let payload = serde_json::json!({});
     let payload_bytes = serde_json::to_vec(&payload)?;
 
@@ -231,7 +289,7 @@ pub fn try_upgrade_telemetry(
         return Ok(false);
     }
 
-    // 4. Parse the TelemetryProviderConfig from the outcome
+    // 5. Parse the TelemetryProviderConfig from the outcome
     let raw_output = match outcome.output {
         Some(value) => value,
         None => {
@@ -253,20 +311,185 @@ pub fn try_upgrade_telemetry(
     let config: greentic_telemetry::provider::TelemetryProviderConfig =
         serde_json::from_value(config_json)?;
 
-    // 5. Validate config
+    // 6. Validate config
     let warnings = greentic_telemetry::provider::validate_telemetry_config(&config);
     for warning in &warnings {
         tracing::warn!(warning = %warning, "telemetry config validation");
     }
 
-    // 6. Initialize OTel pipeline
+    // 7. Initialize OTel pipeline
     greentic_telemetry::provider::init_from_provider_config(&config)?;
 
-    eprintln!(
-        "telemetry upgraded from capability provider (export_mode={}, preset={:?})",
-        config.export_mode,
-        config.preset,
+    tracing::info!(
+        export_mode = %config.export_mode,
+        preset = ?config.preset,
+        endpoint = ?config.endpoint,
+        sampling_ratio = config.sampling_ratio,
+        "telemetry upgraded from capability provider"
     );
 
     Ok(true)
+}
+
+// ---------------------------------------------------------------------------
+// State store capability upgrade (in-memory → Redis)
+// ---------------------------------------------------------------------------
+
+const CAP_STATE_KV_V1: &str = "greentic.cap.state.kv.v1";
+
+/// Try to upgrade the state store from in-memory to Redis by reading
+/// the `redis_url` secret from the state-redis capability pack.
+///
+/// When `setup_answers` is provided, the values are persisted to the dev
+/// secrets store first (same pattern as telemetry).
+///
+/// Returns `Ok(Some(store))` with a Redis-backed state store on success,
+/// `Ok(None)` if no state capability found or Redis URL unavailable.
+pub fn try_upgrade_state_store(
+    bundle: &Path,
+    runner_host: &DemoRunnerHost,
+    secrets_handle: &SecretsManagerHandle,
+    tenant: &str,
+    team: Option<&str>,
+    env_override: Option<&str>,
+    setup_answers: Option<&serde_json::Value>,
+) -> Result<Option<DynStateStore>> {
+    let env = resolve_env(env_override);
+    let scope = ResolveScope {
+        env: Some(env.clone()),
+        tenant: Some(tenant.to_string()),
+        team: team.map(|t| t.to_string()),
+    };
+
+    // 1. Resolve the state.kv capability
+    let Some(binding) = runner_host.resolve_capability(CAP_STATE_KV_V1, None, scope) else {
+        eprintln!("[state-store] no capability '{}' found — using in-memory", CAP_STATE_KV_V1);
+        return Ok(None);
+    };
+    eprintln!(
+        "[state-store] resolved capability: pack_id={} stable_id={}",
+        binding.pack_id, binding.stable_id
+    );
+
+    // 2. Seed secrets for the state pack
+    if let Ok(secrets_setup) = SecretsSetup::new(bundle, &env, tenant, team) {
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            if let Err(e) =
+                rt.block_on(secrets_setup.ensure_pack_secrets(&binding.pack_path, &binding.pack_id))
+            {
+                tracing::warn!(
+                    pack_id = %binding.pack_id,
+                    error = %e,
+                    "state capability secret seeding failed"
+                );
+            }
+        }
+    }
+
+    // 2b. Persist setup_answers as secrets (same as telemetry — capability packs
+    //     are not in any domain, so the wizard doesn't persist their config).
+    if let Some(answers) = setup_answers {
+        if answers.as_object().is_some_and(|m| !m.is_empty()) {
+            let pack_path_ref = Some(binding.pack_path.as_path());
+            let persist_rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
+            if let Ok(rt) = persist_rt {
+                match rt.block_on(crate::qa_persist::persist_all_config_as_secrets(
+                    bundle,
+                    &env,
+                    tenant,
+                    team,
+                    &binding.pack_id,
+                    answers,
+                    pack_path_ref,
+                )) {
+                    Ok(saved) if !saved.is_empty() => {
+                        tracing::info!(
+                            pack_id = %binding.pack_id,
+                            count = saved.len(),
+                            keys = ?saved,
+                            "persisted state-redis setup answers as secrets"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            pack_id = %binding.pack_id,
+                            error = %e,
+                            "failed to persist state-redis setup answers"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // 3. Read the redis_url secret
+    let canonical_team = crate::secrets_manager::canonical_team(team);
+    let secret_uri = format!(
+        "secrets://{}/{}/{}/{}/redis_url",
+        env, tenant, canonical_team, binding.pack_id
+    );
+
+    eprintln!("[state-store] reading secret: {}", secret_uri);
+    let redis_url = {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let manager = secrets_handle.manager();
+        match rt.block_on(manager.read(&secret_uri)) {
+            Ok(bytes) => {
+                let url = String::from_utf8(bytes).ok();
+                eprintln!("[state-store] redis_url secret found (len={})", url.as_ref().map_or(0, |s| s.len()));
+                url
+            }
+            Err(e) => {
+                eprintln!("[state-store] failed to read redis_url secret: {e}");
+                None
+            }
+        }
+    };
+
+    let Some(redis_url) = redis_url else {
+        // Fallback: try REDIS_URL environment variable
+        match std::env::var("REDIS_URL") {
+            Ok(url) => {
+                tracing::info!("using REDIS_URL environment variable for state store");
+                return create_redis_store(&url);
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "redis_url secret not found and REDIS_URL env not set — using in-memory state store"
+                );
+                return Ok(None);
+            }
+        }
+    };
+
+    create_redis_store(&redis_url)
+}
+
+fn create_redis_store(redis_url: &str) -> Result<Option<DynStateStore>> {
+    match greentic_runner_host::storage::new_redis_state_store(redis_url) {
+        Ok(store) => {
+            eprintln!("[state-store] ✓ upgraded to Redis: {}", redis_url);
+            tracing::info!(
+                redis_url = %redis_url,
+                "state store upgraded to Redis"
+            );
+            Ok(Some(store))
+        }
+        Err(e) => {
+            eprintln!("[state-store] ✗ failed to create Redis store: {e}");
+            tracing::warn!(
+                error = %e,
+                "failed to create Redis state store — using in-memory fallback"
+            );
+            Ok(None)
+        }
+    }
 }

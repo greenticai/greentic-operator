@@ -205,6 +205,11 @@ impl DemoRunnerHost {
         self.state_store.clone()
     }
 
+    /// Replace the state store (e.g. upgrade from in-memory to Redis).
+    pub fn set_state_store(&mut self, store: DynStateStore) {
+        self.state_store = store;
+    }
+
     pub fn new(
         bundle_root: PathBuf,
         discovery: &discovery::DiscoveryResult,
@@ -511,15 +516,13 @@ impl DemoRunnerHost {
         payload_bytes: &[u8],
         ctx: &OperatorContext,
     ) -> anyhow::Result<FlowOutcome> {
-        let _span = info_span!(
-            "provider.op",
-            provider.type = %provider_type,
-            provider.op = %op_id,
-            provider.domain = %domains::domain_name(domain),
+        let _span = tracing::info_span!(
+            "invoke_provider_op",
+            provider = %provider_type,
+            op = %op_id,
             tenant = %ctx.tenant,
         )
         .entered();
-
         let mut envelope = OperationEnvelope::new(op_id, payload_bytes, ctx);
         let token_validation_outcome =
             self.evaluate_token_validation_pre_hook(&mut envelope, payload_bytes, ctx)?;

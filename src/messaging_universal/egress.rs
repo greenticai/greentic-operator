@@ -70,6 +70,13 @@ pub fn run_end_to_end(
     if envelopes.is_empty() {
         return Ok(());
     }
+    let _span = tracing::info_span!(
+        "egress_pipeline",
+        provider = %provider,
+        tenant = %ctx.tenant,
+        envelope_count = envelopes.len(),
+    )
+    .entered();
     let team = ctx.team.as_deref();
     let app_pack_path = app::resolve_app_pack_path(bundle, &ctx.tenant, team, app_pack.as_deref())
         .context("failed to resolve app pack")?;
@@ -300,8 +307,27 @@ fn invoke_flow(
     op: &str,
     payload: JsonValue,
 ) -> anyhow::Result<FlowOutcome> {
+    let _span = tracing::info_span!(
+        "wasm_invoke",
+        provider = %provider,
+        op = %op,
+    )
+    .entered();
     let input_bytes = serde_json::to_vec(&payload)?;
-    runner_host.invoke_provider_op(Domain::Messaging, provider, op, &input_bytes, ctx)
+    let outcome = runner_host.invoke_provider_op(Domain::Messaging, provider, op, &input_bytes, ctx);
+    if let Ok(ref o) = outcome {
+        if o.success {
+            tracing::info!(provider = %provider, op = %op, "wasm invoke succeeded");
+        } else {
+            tracing::warn!(
+                provider = %provider,
+                op = %op,
+                error = ?o.error,
+                "wasm invoke failed"
+            );
+        }
+    }
+    outcome
 }
 
 fn ensure_success<'a>(
