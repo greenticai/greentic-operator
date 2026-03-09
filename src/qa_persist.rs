@@ -130,6 +130,157 @@ fn filter_secrets(config: &Value, secret_ids: &[&str]) -> Value {
     Value::Object(filtered)
 }
 
+/// Persist all config values as secrets without requiring a FormSpec.
+///
+/// This is used by `demo start --setup-input` where the QA form spec may not
+/// be available but WASM components still read config values via the secrets API.
+///
+/// Also reads the pack's `secret-requirements.json` (if a `pack_path` is
+/// provided) and seeds aliases so that WASM components that look up secrets by
+/// their canonical requirement key (e.g. `WEBEX_BOT_TOKEN` → `webex_bot_token`)
+/// can find the value even though the answers file uses a shorter key
+/// (e.g. `bot_token`).
+pub async fn persist_all_config_as_secrets(
+    bundle_root: &Path,
+    env: &str,
+    tenant: &str,
+    team: Option<&str>,
+    provider_id: &str,
+    config: &Value,
+    pack_path: Option<&Path>,
+) -> Result<Vec<String>> {
+    let Some(config_map) = config.as_object() else {
+        return Ok(vec![]);
+    };
+    if config_map.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let store_path = crate::dev_store_path::ensure_path(bundle_root)?;
+    let store = DevStore::with_path(&store_path).map_err(|err| {
+        anyhow::anyhow!(
+            "failed to open dev secrets store {}: {err}",
+            store_path.display()
+        )
+    })?;
+
+    let mut entries = Vec::new();
+    let mut saved_keys = Vec::new();
+
+    for (key, value) in config_map {
+        let text = match value {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        if text.is_empty() || text == "null" {
+            continue;
+        }
+        let uri = canonical_secret_uri(env, tenant, team, provider_id, key);
+        entries.push(SeedEntry {
+            uri,
+            format: SecretFormat::Text,
+            value: SeedValue::Text { text },
+            description: Some(format!("from setup-input for {provider_id}")),
+        });
+        saved_keys.push(key.to_string());
+    }
+
+    // Seed aliases from secret-requirements.json so WASM components can find
+    // secrets by their canonical requirement key (e.g. WEBEX_BOT_TOKEN →
+    // webex_bot_token) even when the answers file uses a shorter key (bot_token).
+    if let Some(pp) = pack_path {
+        seed_secret_requirement_aliases(&mut entries, config_map, env, tenant, team, provider_id, pp);
+    }
+
+    if entries.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let report = apply_seed(&store, &SeedDoc { entries }, ApplyOptions::default()).await;
+
+    if !report.failed.is_empty() {
+        return Err(anyhow::anyhow!(
+            "failed to persist {} secret(s): {:?}",
+            report.failed.len(),
+            report.failed
+        ));
+    }
+
+    Ok(saved_keys)
+}
+
+/// Read `assets/secret-requirements.json` from a pack and seed alias entries
+/// for any requirement key that differs from the answers key after
+/// canonicalization.
+fn seed_secret_requirement_aliases(
+    entries: &mut Vec<SeedEntry>,
+    config_map: &JsonMap<String, Value>,
+    env: &str,
+    tenant: &str,
+    team: Option<&str>,
+    provider_id: &str,
+    pack_path: &Path,
+) {
+    let reqs = match read_secret_requirements(pack_path) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let normalize = crate::secret_name::canonical_secret_name;
+    let existing_keys: std::collections::HashSet<String> =
+        entries.iter().filter_map(|e| {
+            e.uri.rsplit('/').next().map(String::from)
+        }).collect();
+
+    for req in &reqs {
+        let canonical_req_key = normalize(&req.key);
+        if existing_keys.contains(&canonical_req_key) {
+            continue;
+        }
+        // Try to find a matching value in config_map by checking if the
+        // requirement key ends with the config key (e.g. WEBEX_BOT_TOKEN
+        // matches bot_token, SLACK_BOT_TOKEN matches bot_token).
+        let matched_value = config_map.iter().find_map(|(cfg_key, cfg_val)| {
+            let norm_cfg = normalize(cfg_key);
+            if canonical_req_key.ends_with(&norm_cfg) {
+                let text = match cfg_val {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                if text.is_empty() || text == "null" {
+                    None
+                } else {
+                    Some(text)
+                }
+            } else {
+                None
+            }
+        });
+        if let Some(text) = matched_value {
+            let uri = canonical_secret_uri(env, tenant, team, provider_id, &canonical_req_key);
+            entries.push(SeedEntry {
+                uri,
+                format: SecretFormat::Text,
+                value: SeedValue::Text { text },
+                description: Some(format!("alias from {} for {provider_id}", req.key)),
+            });
+        }
+    }
+}
+
+/// Minimal representation of a secret-requirements.json entry.
+#[derive(serde::Deserialize)]
+struct SecretRequirement {
+    key: String,
+}
+
+fn read_secret_requirements(pack_path: &Path) -> Result<Vec<SecretRequirement>> {
+    let file = std::fs::File::open(pack_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let entry = archive.by_name("assets/secret-requirements.json")?;
+    let reqs: Vec<SecretRequirement> = serde_json::from_reader(entry)?;
+    Ok(reqs)
+}
+
 /// Convenience function to persist both secrets and config from QA results.
 ///
 /// Creates a `DevStore` from the bundle root and persists both.

@@ -4,11 +4,9 @@ use greentic_operator::operator_i18n;
 use std::env;
 
 fn main() -> anyhow::Result<()> {
-    // NOTE: Do NOT call tracing_subscriber::fmt::init() here.
-    // The telemetry capability upgrade during `demo start` installs an
-    // OTel-enabled tracing subscriber. Setting a fmt subscriber first
-    // would block that upgrade (tracing only allows one global subscriber).
-    // Operator logging uses operator_log (file-based), not tracing.
+    // Tracing subscriber is NOT initialized here.
+    // For demo commands, capability_bootstrap will set up OTel or fmt.
+    // For non-demo commands, fmt is set up lazily below.
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
     if env::var("GREENTIC_PROVIDER_CORE_ONLY").is_err() {
         // set_var is unsafe in this codebase, so wrap it accordingly.
@@ -46,7 +44,9 @@ fn main() -> anyhow::Result<()> {
             err.exit();
         }
     };
-    cli.run()
+    let result = cli.run();
+    greentic_telemetry::shutdown();
+    result
 }
 
 fn cli_locale_arg(args: &[String]) -> Option<String> {

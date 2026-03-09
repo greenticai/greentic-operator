@@ -227,6 +227,22 @@ pub fn run_provider_setup(
                         write_run_output(&verify_path, &provider, &verify_flow, &output)?;
                     }
                 }
+                // Auto-register webhooks with external APIs (Telegram, Slack, Webex)
+                // Merge raw answers into config so webhook-specific fields
+                // (e.g. slack_configuration_token, slack_app_id) are available.
+                {
+                    let mut wh_config = qa_config_override.clone().unwrap_or(json!({}));
+                    if let Some(obj) = answers.as_object() {
+                        for (k, v) in obj {
+                            if wh_config.get(k).is_none() {
+                                wh_config[k] = v.clone();
+                            }
+                        }
+                    }
+                    try_webhook_setup(
+                        config_dir, &provider, &config.tenant, Some(&config.team), &wh_config,
+                    );
+                }
                 let status_path = providers_root.join(format!("{provider}.status.json"));
                 write_status(&status_path, &provider, &setup_path)?;
                 return Ok(());
@@ -266,6 +282,21 @@ pub fn run_provider_setup(
                 }
             }
 
+            // Auto-register webhooks with external APIs (Telegram, Slack, Webex)
+            // Merge raw answers so webhook-specific fields are available.
+            {
+                let mut wh_config = input["config"].clone();
+                if let Some(obj) = answers.as_object() {
+                    for (k, v) in obj {
+                        if wh_config.get(k).is_none() {
+                            wh_config[k] = v.clone();
+                        }
+                    }
+                }
+                try_webhook_setup(
+                    config_dir, &provider, &config.tenant, Some(&config.team), &wh_config,
+                );
+            }
             let status_path = providers_root.join(format!("{provider}.status.json"));
             write_status(&status_path, &provider, &setup_path)?;
             Ok(())
@@ -313,6 +344,68 @@ pub(crate) fn write_qa_setup_success_record(
     }
     std::fs::write(path, bytes)?;
     Ok(())
+}
+
+/// Try to register webhooks with external APIs after provider setup.
+/// This is a best-effort operation — failures are logged but do not block setup.
+fn try_webhook_setup(
+    config_dir: &Path,
+    provider: &str,
+    tenant: &str,
+    team: Option<&str>,
+    config: &Value,
+) {
+    // Resolve pack path for webhook_setup API
+    let pack_path = config_dir.join("packs").join(format!("{provider}.gtpack"));
+    let pack = crate::domains::ProviderPack {
+        pack_id: provider.to_string(),
+        file_name: pack_path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or_default()
+            .to_string(),
+        path: pack_path,
+        entry_flows: Vec::new(),
+    };
+    match crate::onboard::webhook_setup::try_provider_setup_webhook(
+        config_dir,
+        Domain::Messaging,
+        &pack,
+        provider,
+        tenant,
+        team,
+        config,
+    ) {
+        Some(result) => {
+            let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            if ok {
+                operator_log::info(
+                    module_path!(),
+                    format!(
+                        "[providers] webhook auto-setup ok provider={} result={}",
+                        provider, result
+                    ),
+                );
+            } else {
+                operator_log::warn(
+                    module_path!(),
+                    format!(
+                        "[providers] webhook auto-setup failed provider={} result={}",
+                        provider, result
+                    ),
+                );
+            }
+        }
+        None => {
+            operator_log::info(
+                module_path!(),
+                format!(
+                    "[providers] webhook auto-setup skipped provider={} (no public_base_url or unsupported)",
+                    provider
+                ),
+            );
+        }
+    }
 }
 
 fn resolve_providers(
@@ -391,9 +484,19 @@ fn build_input(
         "env": "dev",
     });
     let mut config = serde_json::json!({});
-    if let Some(url) = public_base_url {
-        payload["public_base_url"] = Value::String(url.to_string());
-        config["public_base_url"] = Value::String(url.to_string());
+    // Use runtime public_base_url, fall back to answers if not available
+    let effective_url = public_base_url
+        .map(|u| u.to_string())
+        .or_else(|| {
+            answers
+                .and_then(|a| a.get("public_base_url"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        });
+    if let Some(ref url) = effective_url {
+        payload["public_base_url"] = Value::String(url.clone());
+        config["public_base_url"] = Value::String(url.clone());
     }
     config["id"] = Value::String(pack_id.to_string());
     payload["config"] = config;

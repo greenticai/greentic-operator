@@ -3,6 +3,7 @@ pub mod card;
 pub mod commands;
 mod doctor;
 pub mod event_router;
+pub mod github_mcp;
 pub mod help;
 pub mod history;
 pub mod http_ingress;

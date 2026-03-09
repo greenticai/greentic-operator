@@ -505,13 +505,13 @@ struct DemoPolicyArgs {
 struct DemoWizardArgs {
     #[arg(long, value_enum, default_value_t = WizardModeArg::Create)]
     mode: WizardModeArg,
-    #[arg(long, help = "Path to the demo bundle to create.")]
+    #[arg(long, alias = "out", help = "Path to the demo bundle to create.")]
     bundle: Option<PathBuf>,
     #[arg(
         long = "answers",
-        help = "AnswerDocument JSON/YAML (or legacy raw wizard answers)."
+        help = "AnswerDocument JSON/YAML — local path or https:// URL."
     )]
-    answers: Option<PathBuf>,
+    answers: Option<String>,
     #[arg(
         long = "emit-answers",
         help = "Write merged answers as AnswerDocument JSON."
@@ -679,6 +679,10 @@ struct WizardQaAnswers {
     remove_targets: Vec<WizardRemoveTargetAnswer>,
     locale: Option<String>,
     execution_mode: Option<String>,
+    /// Per-provider setup answers that get seeded as secrets during bundle creation.
+    /// Format: `{ "messaging-webchat": { "public_base_url": "...", ... }, ... }`
+    #[serde(default)]
+    setup_answers: JsonMap<String, JsonValue>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1938,6 +1942,8 @@ impl DemoUpArgs {
         let command_label = "demo start";
         let debug_enabled = self.verbose;
         if let Some(bundle) = self.bundle.clone() {
+            // Resolve remote bundle references (https://) to local directory.
+            let bundle = resolve_bundle_source(&bundle)?;
             let state_dir = bundle.join("state");
             std::fs::create_dir_all(&state_dir)?;
             let log_dir = self.log_dir.clone().unwrap_or_else(|| bundle.join("logs"));
@@ -2027,7 +2033,7 @@ impl DemoUpArgs {
                 capability_secrets_handle.clone(),
                 debug_enabled,
             )?;
-            log_capability_bootstrap_report(
+            crate::capability_bootstrap::log_capability_bootstrap_report(
                 &capability_runner,
                 &OperatorContext {
                     tenant: tenant_ref.clone(),
@@ -2037,96 +2043,20 @@ impl DemoUpArgs {
                 &domains_to_setup,
             );
 
-            // --- Telemetry upgrade from capability provider ---
-            {
-                let tel_ctx = OperatorContext {
-                    tenant: tenant_ref.clone(),
-                    team: team_ref.clone(),
-                    correlation_id: None,
-                };
-                match capability_runner.invoke_capability(
-                    "greentic.cap.telemetry.v1",
-                    "telemetry.configure",
-                    b"{}",
-                    &tel_ctx,
-                ) {
-                    Ok(outcome) if outcome.success => {
-                        if let Some(ref output) = outcome.output {
-                            let config_value = if output.get("output").is_some() {
-                                &output["output"]
-                            } else {
-                                output
-                            };
-                            operator_log::info(
-                                module_path!(),
-                                format!(
-                                    "telemetry provider config: {}",
-                                    serde_json::to_string_pretty(config_value)
-                                        .unwrap_or_else(|_| "<serialize error>".to_string()),
-                                ),
-                            );
-                            match serde_json::from_value::<
-                                greentic_telemetry::provider::TelemetryProviderConfig,
-                            >(config_value.clone())
-                            {
-                                Ok(tel_config) => {
-                                    match greentic_telemetry::provider::init_from_provider_config(
-                                        &tel_config,
-                                    ) {
-                                        Ok(()) => {
-                                            operator_log::info(
-                                                module_path!(),
-                                                "telemetry upgraded from capability provider",
-                                            );
-                                            // Emit a tracing span to verify OTel export works
-                                            let _span = tracing::info_span!(
-                                                "operator.telemetry.upgrade",
-                                                otel.status_code = "OK",
-                                                service.name = "greentic-operator",
-                                            )
-                                            .entered();
-                                            tracing::info!("OTel pipeline active");
-                                        }
-                                        Err(e) => {
-                                            operator_log::warn(
-                                                module_path!(),
-                                                format!(
-                                                    "telemetry upgrade init failed: {e}; continuing with default telemetry"
-                                                ),
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    operator_log::warn(
-                                        module_path!(),
-                                        format!(
-                                            "telemetry config parse failed: {e}; continuing with default telemetry"
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Ok(outcome) => {
-                        let reason = outcome
-                            .error
-                            .unwrap_or_else(|| "unknown".to_string());
-                        operator_log::info(
-                            module_path!(),
-                            format!(
-                                "telemetry capability not available: {reason}; using default telemetry"
-                            ),
-                        );
-                    }
-                    Err(e) => {
-                        operator_log::warn(
-                            module_path!(),
-                            format!(
-                                "telemetry capability invocation failed: {e}; using default telemetry"
-                            ),
-                        );
-                    }
+            // --- Telemetry capability bootstrap ---
+            match crate::capability_bootstrap::try_upgrade_telemetry(
+                &bundle,
+                &capability_runner,
+                &tenant_ref,
+                team_ref.as_deref(),
+                None,
+            ) {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!("no telemetry capability — using default tracing");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "telemetry capability bootstrap failed — using default tracing");
                 }
             }
 
@@ -2728,7 +2658,7 @@ impl DemoSetupArgs {
             setup_secrets_handle,
             demo_debug_enabled(),
         )?;
-        log_capability_bootstrap_report(
+        crate::capability_bootstrap::log_capability_bootstrap_report(
             &setup_runner,
             &OperatorContext {
                 tenant: self.tenant.clone(),
@@ -2783,144 +2713,6 @@ impl DemoSetupArgs {
     }
 }
 
-#[derive(Clone, Copy)]
-enum CapabilityPriority {
-    Required,
-    Recommended,
-}
-
-struct CapabilityExpectation {
-    cap_id: &'static str,
-    priority: CapabilityPriority,
-}
-
-fn capability_expectations_for_domains(domains: &[Domain]) -> Vec<CapabilityExpectation> {
-    let mut out = Vec::new();
-    let has_messaging = domains.contains(&Domain::Messaging);
-    let has_events = domains.contains(&Domain::Events);
-    let has_secrets = domains.contains(&Domain::Secrets);
-
-    if has_messaging {
-        out.push(CapabilityExpectation {
-            cap_id: "greentic.cap.messaging.provider.v1",
-            priority: CapabilityPriority::Required,
-        });
-    }
-    if has_events {
-        out.push(CapabilityExpectation {
-            cap_id: "greentic.cap.events.provider.v1",
-            priority: CapabilityPriority::Required,
-        });
-    }
-    if has_secrets {
-        out.push(CapabilityExpectation {
-            cap_id: "greentic.cap.secrets.store.v1",
-            priority: CapabilityPriority::Required,
-        });
-    }
-    if has_messaging || has_events {
-        out.push(CapabilityExpectation {
-            cap_id: "greentic.cap.oauth.broker.v1",
-            priority: CapabilityPriority::Recommended,
-        });
-        out.push(CapabilityExpectation {
-            cap_id: "greentic.cap.mcp.exec.v1",
-            priority: CapabilityPriority::Recommended,
-        });
-    }
-
-    out
-}
-
-fn log_capability_bootstrap_report(
-    runner_host: &DemoRunnerHost,
-    ctx: &OperatorContext,
-    domains: &[Domain],
-) {
-    let scope = ResolveScope {
-        env: std::env::var("GREENTIC_ENV").ok(),
-        tenant: Some(ctx.tenant.clone()),
-        team: ctx.team.clone(),
-    };
-    let expectations = capability_expectations_for_domains(domains);
-    let mut missing_required = Vec::new();
-    let mut missing_recommended = Vec::new();
-    for item in &expectations {
-        let resolved = runner_host.resolve_capability(item.cap_id, None, scope.clone());
-        if resolved.is_none()
-            && item.cap_id == "greentic.cap.secrets.store.v1"
-            && domains.contains(&Domain::Secrets)
-            && runner_host.has_provider_packs_for_domain(Domain::Secrets)
-        {
-            operator_log::info(
-                module_path!(),
-                "capability bootstrap: using legacy secrets providers fallback for greentic.cap.secrets.store.v1",
-            );
-            continue;
-        }
-        if resolved.is_none() {
-            match item.priority {
-                CapabilityPriority::Required => missing_required.push(item.cap_id.to_string()),
-                CapabilityPriority::Recommended => {
-                    missing_recommended.push(item.cap_id.to_string())
-                }
-            }
-        }
-    }
-
-    let pending_setup = runner_host.capability_setup_plan(ctx);
-    if pending_setup.is_empty() {
-        operator_log::info(
-            module_path!(),
-            "capability setup plan: no capabilities requiring setup found",
-        );
-    } else {
-        let ids = pending_setup
-            .iter()
-            .map(|binding| format!("{}@{}", binding.cap_id, binding.stable_id))
-            .collect::<Vec<_>>()
-            .join(", ");
-        operator_log::info(
-            module_path!(),
-            format!(
-                "capability setup plan pending={} [{}]",
-                pending_setup.len(),
-                ids
-            ),
-        );
-    }
-
-    if !missing_required.is_empty() {
-        let joined = missing_required.join(", ");
-        operator_log::warn(
-            module_path!(),
-            format!("missing required capabilities for setup/start: {joined}"),
-        );
-        eprintln!(
-            "{}",
-            operator_i18n::trf(
-                "cli.capability.bootstrap.missing_required",
-                "Warning: missing required capabilities: {}",
-                &[&joined]
-            )
-        );
-    }
-    if !missing_recommended.is_empty() {
-        let joined = missing_recommended.join(", ");
-        operator_log::warn(
-            module_path!(),
-            format!("missing recommended capabilities for setup/start: {joined}"),
-        );
-        eprintln!(
-            "{}",
-            operator_i18n::trf(
-                "cli.capability.bootstrap.missing_recommended",
-                "Note: missing recommended capabilities: {}",
-                &[&joined]
-            )
-        );
-    }
-}
 
 impl DemoPolicyArgs {
     fn run(self, policy: Policy) -> anyhow::Result<()> {
@@ -3056,9 +2848,13 @@ impl DemoWizardArgs {
             .map(|entry| entry.id.clone())
             .collect::<Vec<_>>();
         let prefilled_answers = build_prefilled_wizard_answers_from_cli(&self, &effective_locale);
-        let answers_input = self.answers.as_ref().or(self.qa_answers.as_ref());
-        let (mut answers, loaded_doc) = if let Some(path) = answers_input {
-            load_wizard_answers_input(path, &schema_version, self.migrate)?
+        let answers_input = self
+            .answers
+            .as_deref()
+            .map(|s| s.to_string())
+            .or_else(|| self.qa_answers.as_ref().map(|p| p.display().to_string()));
+        let (mut answers, loaded_doc) = if let Some(ref source) = answers_input {
+            load_wizard_answers_from_source(source, &schema_version, self.migrate)?
         } else {
             (
                 run_wizard_via_qa(
@@ -3206,6 +3002,7 @@ impl DemoWizardArgs {
             providers_remove,
             tenants_remove,
             access_changes,
+            setup_answers: answers.setup_answers.clone(),
         };
         let qa_execute = matches!(answers.execution_mode.as_deref(), Some("execute"));
         let (execute_requested, dry_run) = if self.apply {
@@ -3463,16 +3260,31 @@ fn resolve_wizard_schema_version(override_version: Option<&str>) -> String {
         .to_string()
 }
 
-fn load_wizard_answers_input(
-    path: &Path,
+/// Load wizard answers from a local file path or an https:// URL.
+fn load_wizard_answers_from_source(
+    source: &str,
     expected_schema_version: &str,
     allow_migrate: bool,
 ) -> anyhow::Result<(WizardQaAnswers, Option<WizardAnswerDocument>)> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("read wizard answers {}", path.display()))?;
+    let raw = if source.starts_with("https://") || source.starts_with("http://") {
+        let output = std::process::Command::new("curl")
+            .args(["-sfSL", "--max-time", "30", source])
+            .output()
+            .with_context(|| format!("fetch wizard answers from {source}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("failed to fetch {source}: {stderr}"));
+        }
+        String::from_utf8(output.stdout)
+            .with_context(|| format!("decode response from {source}"))?
+    } else {
+        let path = Path::new(source);
+        std::fs::read_to_string(path)
+            .with_context(|| format!("read wizard answers {}", path.display()))?
+    };
     let value: JsonValue = serde_json::from_str(&raw)
         .or_else(|_| serde_yaml_bw::from_str(&raw))
-        .with_context(|| format!("parse wizard answers {}", path.display()))?;
+        .with_context(|| format!("parse wizard answers from {source}"))?;
     parse_wizard_answers_input_value(value, expected_schema_version, allow_migrate)
 }
 
@@ -4753,6 +4565,18 @@ impl DemoSendArgs {
             secrets_handle.clone(),
             false,
         )?;
+
+        // --- Telemetry capability bootstrap ---
+        if let Err(e) = crate::capability_bootstrap::try_upgrade_telemetry(
+            &self.bundle,
+            &runner_host,
+            &self.tenant,
+            team,
+            None,
+        ) {
+            tracing::warn!(error = %e, "telemetry capability bootstrap failed");
+        }
+
         let env = self.env.clone();
         let context = OperatorContext {
             tenant: self.tenant.clone(),
@@ -5765,11 +5589,122 @@ fn start_demo_ingress_server(
         secrets_handle.clone(),
         debug_enabled,
     )?);
+    // Extract webchat SPA GUI assets from messaging-webchat.gtpack if present.
+    // Use localhost instead of 0.0.0.0 so browser can reach the URL.
+    let host = if bind_addr.ip().is_unspecified() {
+        format!("localhost:{}", bind_addr.port())
+    } else {
+        bind_addr.to_string()
+    };
+    let base_url = format!("http://{}", host);
+    let webchat_spa_dir = extract_gui_from_gtpack(bundle, discovery, &base_url);
     HttpIngressServer::start(HttpIngressConfig {
         bind_addr,
         domains: domains.to_vec(),
         runner_host,
+        webchat_spa_dir,
     })
+}
+
+/// Look for a messaging-webchat gtpack that contains a `gui/` directory and
+/// extract the GUI assets to `{bundle}/state/.gui-cache/webchat/`.
+fn extract_gui_from_gtpack(
+    bundle: &Path,
+    discovery: &discovery::DiscoveryResult,
+    base_url: &str,
+) -> Option<PathBuf> {
+    let webchat_pack = discovery
+        .providers
+        .iter()
+        .find(|p| p.domain == "messaging" && p.provider_id.contains("webchat"))?;
+    let pack_path = &webchat_pack.pack_path;
+    let archive = zip::ZipArchive::new(std::fs::File::open(pack_path).ok()?).ok()?;
+    let has_gui = archive.file_names().any(|name| name.starts_with("gui/"));
+    if !has_gui {
+        return None;
+    }
+    drop(archive);
+
+    let dest = bundle.join("state").join(".gui-cache").join("webchat");
+    // Re-extract every start (simple; avoids stale cache issues).
+    let _ = std::fs::remove_dir_all(&dest);
+    std::fs::create_dir_all(&dest).ok()?;
+
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(pack_path).ok()?).ok()?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).ok()?;
+        let name = entry.name().to_string();
+        if !name.starts_with("gui/") {
+            continue;
+        }
+        let rel = &name["gui/".len()..];
+        if rel.is_empty() || rel.contains("..") {
+            continue;
+        }
+        let out_path = dest.join(rel);
+        if name.ends_with('/') {
+            std::fs::create_dir_all(&out_path).ok()?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent).ok()?;
+            }
+            let mut out_file = std::fs::File::create(&out_path).ok()?;
+            std::io::copy(&mut entry, &mut out_file).ok()?;
+        }
+    }
+    // Patch skin.json files: rewrite directLine.tokenUrl and domain to absolute
+    // URLs so the Zod `.url()` validator in the SPA accepts them.
+    patch_skin_directline_urls(&dest, base_url);
+
+    operator_log::info(
+        module_path!(),
+        format!("webchat GUI extracted from {}", pack_path.display()),
+    );
+    Some(dest)
+}
+
+/// Rewrite `directLine.tokenUrl` and `directLine.domain` in every
+/// `skins/*/skin.json` to absolute URLs rooted at `base_url`.
+fn patch_skin_directline_urls(gui_dir: &Path, base_url: &str) {
+    let skins_dir = gui_dir.join("skins");
+    let entries = match std::fs::read_dir(&skins_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let skin_path = entry.path().join("skin.json");
+        if !skin_path.exists() {
+            continue;
+        }
+        let raw = match std::fs::read_to_string(&skin_path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let mut doc: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let changed = if let Some(dl) = doc.get_mut("directLine").and_then(|v| v.as_object_mut()) {
+            let mut c = false;
+            for key in &["tokenUrl", "domain"] {
+                if let Some(val) = dl.get_mut(*key).and_then(|v| v.as_str().map(String::from)) {
+                    if val.starts_with('/') {
+                        let abs = format!("{}{}", base_url.trim_end_matches('/'), val);
+                        dl.insert(key.to_string(), serde_json::Value::String(abs));
+                        c = true;
+                    }
+                }
+            }
+            c
+        } else {
+            false
+        };
+        if changed {
+            if let Ok(patched) = serde_json::to_string_pretty(&doc) {
+                let _ = std::fs::write(&skin_path, patched);
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5932,6 +5867,114 @@ impl DemoDoctorArgs {
 
 fn project_root(arg: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     Ok(arg.unwrap_or(env::current_dir()?))
+}
+
+/// Resolve a bundle path that may be:
+/// - A local directory path (returned as-is)
+/// - An `https://` or `http://` URL pointing to a `.tar.gz` or `.zip` archive
+///   (downloaded and extracted to a local cache directory)
+fn resolve_bundle_source(bundle: &PathBuf) -> anyhow::Result<PathBuf> {
+    let s = bundle.to_string_lossy();
+    if !s.starts_with("https://") && !s.starts_with("http://") {
+        // Local path – use as-is.
+        return Ok(bundle.clone());
+    }
+
+    // Determine cache directory: ~/.greentic/cache/bundles/<hash>/
+    let url = s.to_string();
+    let hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        url.hash(&mut h);
+        format!("{:016x}", h.finish())
+    };
+    let cache_base = directories_next::ProjectDirs::from("ai", "greentic", "greentic-operator")
+        .map(|dirs| dirs.cache_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".greentic").join("cache"));
+    let dest = cache_base.join("bundles").join(&hash);
+
+    // If already extracted, reuse.
+    if dest.join(".bundle_url").exists() {
+        eprintln!("[bundle] Menggunakan cache bundle dari {url}");
+        return Ok(dest);
+    }
+
+    eprintln!("[bundle] Mengunduh bundle dari {url} ...");
+    let tmp_archive = dest.parent().unwrap().join(format!("{hash}.download"));
+    std::fs::create_dir_all(dest.parent().unwrap())?;
+
+    // Download with curl.
+    let output = std::process::Command::new("curl")
+        .args(["-fSL", "--max-time", "120", "-o"])
+        .arg(&tmp_archive)
+        .arg(&url)
+        .output()
+        .with_context(|| format!("download bundle from {url}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = std::fs::remove_file(&tmp_archive);
+        return Err(anyhow!("gagal mengunduh bundle {url}: {stderr}"));
+    }
+
+    // Detect format and extract.
+    std::fs::create_dir_all(&dest)?;
+    let is_zip = url.ends_with(".zip")
+        || url.ends_with(".gtbundle")
+        || {
+            // Check magic bytes: PK\x03\x04
+            std::fs::read(&tmp_archive)
+                .map(|b| b.len() >= 4 && b[0] == 0x50 && b[1] == 0x4B && b[2] == 0x03 && b[3] == 0x04)
+                .unwrap_or(false)
+        };
+
+    if is_zip {
+        let file = std::fs::File::open(&tmp_archive)
+            .with_context(|| format!("open downloaded archive {}", tmp_archive.display()))?;
+        let mut archive = zip::ZipArchive::new(file)
+            .with_context(|| "parse downloaded zip archive")?;
+        archive.extract(&dest)
+            .with_context(|| format!("extract zip to {}", dest.display()))?;
+    } else {
+        // Assume tar.gz
+        let status = std::process::Command::new("tar")
+            .args(["xzf"])
+            .arg(&tmp_archive)
+            .arg("-C")
+            .arg(&dest)
+            .status()
+            .with_context(|| "extract tar.gz bundle")?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&dest);
+            let _ = std::fs::remove_file(&tmp_archive);
+            return Err(anyhow!("gagal mengekstrak bundle archive"));
+        }
+    }
+
+    // If the archive extracted into a single subdirectory, flatten it.
+    let entries: Vec<_> = std::fs::read_dir(&dest)?
+        .filter_map(|e| e.ok())
+        .collect();
+    if entries.len() == 1 && entries[0].file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        let inner = entries[0].path();
+        // Check if it looks like a bundle (has packs/ or providers/ or gmap.yaml).
+        let looks_like_bundle = inner.join("packs").exists()
+            || inner.join("providers").exists()
+            || inner.join("gmap.yaml").exists();
+        if looks_like_bundle {
+            let tmp_inner = dest.parent().unwrap().join(format!("{hash}.inner"));
+            std::fs::rename(&inner, &tmp_inner)?;
+            std::fs::remove_dir_all(&dest)?;
+            std::fs::rename(&tmp_inner, &dest)?;
+        }
+    }
+
+    // Write marker file.
+    std::fs::write(dest.join(".bundle_url"), &url)?;
+    let _ = std::fs::remove_file(&tmp_archive);
+
+    eprintln!("[bundle] Bundle diekstrak ke {}", dest.display());
+    Ok(dest)
 }
 
 fn resolve_state_dir(state_dir: Option<PathBuf>, bundle: Option<&PathBuf>) -> PathBuf {
@@ -6836,26 +6879,93 @@ fn run_plan_item(
         None
     };
 
-    // Persist secrets and config from QA results when FormSpec is available
-    if let Some(ref config) = qa_config_override
-        && let Some(ref form_spec) = qa_form_spec
-        && action == DomainAction::Setup
-        && let Err(err) = crate::qa_persist::persist_qa_config(
-            &providers_root,
-            &provider_id,
-            config,
-            &item.pack.path,
-            form_spec,
-            backup,
-        )
-    {
-        operator_log::warn(
-            module_path!(),
-            format!(
-                "failed to persist qa config provider={}: {err}",
-                provider_id
-            ),
-        );
+    // Persist secrets and config from QA results
+    if action == DomainAction::Setup {
+        // Persist config envelope when FormSpec is available
+        if let Some(ref config) = qa_config_override
+            && let Some(ref form_spec) = qa_form_spec
+        {
+            if let Err(err) = crate::qa_persist::persist_qa_config(
+                &providers_root,
+                &provider_id,
+                config,
+                &item.pack.path,
+                form_spec,
+                backup,
+            ) {
+                operator_log::warn(
+                    module_path!(),
+                    format!("failed to persist qa config provider={}: {err}", provider_id),
+                );
+            }
+        }
+
+        // Persist setup-input answers AND QA config output as secrets.
+        // WASM components read all values (both secret and non-secret) via
+        // the secrets API, so we must persist everything.
+        // Use GREENTIC_ENV (not CLI --env) to match the runtime's secret URI scope.
+        let env_value = resolve_env(None);
+
+        // Merge: start with setup input answers, overlay with QA config output
+        let mut merged = serde_json::Map::new();
+        if let Some(ref answers) = setup_values {
+            if let Some(map) = answers.as_object() {
+                for (k, v) in map {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        if let Some(ref config) = qa_config_override {
+            if let Some(map) = config.as_object() {
+                for (k, v) in map {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        let merged_value = serde_json::Value::Object(merged);
+
+        let pack_path_ref = Some(item.pack.path.as_path());
+        let persist_result = tokio::runtime::Handle::try_current()
+            .map(|h| {
+                h.block_on(crate::qa_persist::persist_all_config_as_secrets(
+                    root,
+                    &env_value,
+                    tenant,
+                    team,
+                    &provider_id,
+                    &merged_value,
+                    pack_path_ref,
+                ))
+            })
+            .unwrap_or_else(|_| {
+                let rt = tokio::runtime::Runtime::new().expect("persist secrets runtime");
+                rt.block_on(crate::qa_persist::persist_all_config_as_secrets(
+                    root,
+                    &env_value,
+                    tenant,
+                    team,
+                    &provider_id,
+                    &merged_value,
+                    pack_path_ref,
+                ))
+            });
+        match persist_result {
+            Ok(saved) if !saved.is_empty() => {
+                eprintln!(
+                    "persisted {} secret(s) for provider={}: {:?}",
+                    saved.len(),
+                    provider_id,
+                    saved
+                );
+            }
+            Err(err) => {
+                operator_log::warn(
+                    module_path!(),
+                    format!("failed to persist secrets provider={}: {err}", provider_id),
+                );
+            }
+            _ => {}
+        }
     }
 
     let public_base_url_ref = public_base_url.as_deref().map(|value| value.as_str());

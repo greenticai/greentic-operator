@@ -60,6 +60,7 @@ pub struct WizardPlanMetadata {
     pub providers_remove: Vec<String>,
     pub tenants_remove: Vec<TenantSelection>,
     pub access_changes: Vec<AccessChangeSelection>,
+    pub setup_answers: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -290,6 +291,8 @@ pub struct WizardCreateRequest {
     pub providers_remove: Vec<String>,
     pub tenants_remove: Vec<TenantSelection>,
     pub access_changes: Vec<AccessChangeSelection>,
+    /// Per-provider setup answers to seed as secrets during bundle creation.
+    pub setup_answers: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -456,6 +459,7 @@ pub fn apply_create(request: &WizardCreateRequest, dry_run: bool) -> anyhow::Res
             providers_remove: request.providers_remove.clone(),
             tenants_remove: request.tenants_remove.clone(),
             access_changes: request.access_changes.clone(),
+            setup_answers: request.setup_answers.clone(),
         },
     })
 }
@@ -669,6 +673,7 @@ pub fn apply_update(request: &WizardCreateRequest, dry_run: bool) -> anyhow::Res
             providers_remove: request.providers_remove.clone(),
             tenants_remove: request.tenants_remove.clone(),
             access_changes: request.access_changes.clone(),
+            setup_answers: request.setup_answers.clone(),
         },
     })
 }
@@ -789,6 +794,7 @@ pub fn apply_remove(request: &WizardCreateRequest, dry_run: bool) -> anyhow::Res
             providers_remove: request.providers_remove.clone(),
             tenants_remove: request.tenants_remove.clone(),
             access_changes: request.access_changes.clone(),
+            setup_answers: request.setup_answers.clone(),
         },
     })
 }
@@ -947,6 +953,7 @@ pub fn execute_create_plan(
             copy_pack_into_bundle(&plan.bundle, &item)?;
             resolved_packs.push(item);
         }
+        link_packs_to_provider_dirs(&plan.bundle, &resolved_packs)?;
     }
     let mut warnings = Vec::new();
     let mut provider_updates = upsert_provider_registry(&plan.bundle, &resolved_packs)?;
@@ -960,6 +967,23 @@ pub fn execute_create_plan(
     if !plan.metadata.providers.is_empty() {
         provider_updates +=
             upsert_provider_ids(&plan.bundle, &plan.metadata.providers, &mut warnings)?;
+    }
+
+    // Seed secrets from setup_answers for each tenant.
+    if !plan.metadata.setup_answers.is_empty() {
+        seed_setup_answers(
+            &plan.bundle,
+            &plan.metadata.tenants,
+            &plan.metadata.setup_answers,
+            &mut warnings,
+        )?;
+
+        // Auto-register webhooks using answers (Telegram, Slack, Webex).
+        run_webhook_setup_from_answers(
+            &plan.bundle,
+            &plan.metadata.tenants,
+            &plan.metadata.setup_answers,
+        );
     }
 
     let copied = apply_access_and_sync(
@@ -1028,6 +1052,7 @@ pub fn execute_update_plan(
             copy_pack_into_bundle(&plan.bundle, &item)?;
             resolved_packs.push(item);
         }
+        link_packs_to_provider_dirs(&plan.bundle, &resolved_packs)?;
     }
     if !plan.metadata.default_assignments.is_empty() {
         apply_default_assignments(
@@ -1394,6 +1419,212 @@ fn copy_pack_into_bundle(bundle: &Path, pack: &ResolvedPackInfo) -> anyhow::Resu
     }
     std::fs::copy(src, dst)?;
     Ok(())
+}
+
+/// Copy each resolved pack into the corresponding `providers/{domain}/` directory
+/// so that `discovery::discover()` can detect them at `demo start` time.
+fn link_packs_to_provider_dirs(bundle: &Path, packs: &[ResolvedPackInfo]) -> anyhow::Result<()> {
+    for pack in packs {
+        let domain_dir = if pack.pack_id.starts_with("messaging-") {
+            "messaging"
+        } else if pack.pack_id.starts_with("events-") {
+            "events"
+        } else if pack.pack_id.starts_with("oauth-") {
+            "oauth"
+        } else {
+            continue;
+        };
+        let src = bundle.join(&pack.output_path);
+        if !src.exists() {
+            continue;
+        }
+        let dest_dir = bundle.join("providers").join(domain_dir);
+        std::fs::create_dir_all(&dest_dir)?;
+        let file_name = src
+            .file_name()
+            .ok_or_else(|| anyhow!("bad pack path {}", src.display()))?;
+        let dst = dest_dir.join(file_name);
+        if !dst.exists() {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+/// Seed secrets from the `setup_answers` map in the wizard answers.
+///
+/// For each provider in `setup_answers`, calls `persist_all_config_as_secrets`
+/// so that WASM components can read the values via the secrets API at runtime.
+fn seed_setup_answers(
+    bundle: &Path,
+    tenants: &[TenantSelection],
+    setup_answers: &serde_json::Map<String, serde_json::Value>,
+    warnings: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    let env = crate::secrets_setup::resolve_env(None);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime for secret seeding")?;
+
+    // Seed for each tenant declared in the plan.
+    let tenant_ids: Vec<String> = if tenants.is_empty() {
+        vec!["demo".to_string()]
+    } else {
+        tenants.iter().map(|t| t.tenant.clone()).collect()
+    };
+
+    for (provider_id, config) in setup_answers {
+        if !config.is_object() || config.as_object().is_some_and(|m| m.is_empty()) {
+            continue;
+        }
+        // Try to find the pack path so secret-requirements aliases are seeded.
+        let pack_path = find_provider_pack_path(bundle, provider_id);
+        for tenant in &tenant_ids {
+            match rt.block_on(crate::qa_persist::persist_all_config_as_secrets(
+                bundle,
+                &env,
+                tenant,
+                None, // team
+                provider_id,
+                config,
+                pack_path.as_deref(),
+            )) {
+                Ok(keys) => {
+                    if !keys.is_empty() {
+                        crate::operator_log::info(
+                            module_path!(),
+                            format!(
+                                "seeded {} secret(s) for provider={} tenant={}",
+                                keys.len(),
+                                provider_id,
+                                tenant
+                            ),
+                        );
+                    }
+                }
+                Err(err) => {
+                    warnings.push(format!(
+                        "failed to seed secrets for provider={} tenant={}: {err}",
+                        provider_id, tenant
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Locate a provider's .gtpack file in the bundle by provider_id stem.
+fn find_provider_pack_path(bundle: &Path, provider_id: &str) -> Option<std::path::PathBuf> {
+    // Search in providers/messaging, providers/events, packs
+    for subdir in &["providers/messaging", "providers/events", "packs"] {
+        let dir = bundle.join(subdir);
+        let candidate = dir.join(format!("{provider_id}.gtpack"));
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Run webhook auto-setup for providers that have answers with public_base_url.
+/// Called during wizard execute so webhooks are registered without needing demo start.
+fn run_webhook_setup_from_answers(
+    bundle: &Path,
+    tenants: &[TenantSelection],
+    setup_answers: &serde_json::Map<String, serde_json::Value>,
+) {
+    let tenant_ids: Vec<String> = if tenants.is_empty() {
+        vec!["demo".to_string()]
+    } else {
+        tenants.iter().map(|t| t.tenant.clone()).collect()
+    };
+
+    for (provider_id, answers) in setup_answers {
+        let Some(obj) = answers.as_object() else {
+            continue;
+        };
+        if obj.is_empty() {
+            continue;
+        }
+        // Need public_base_url to register webhooks
+        let Some(public_url) = obj.get("public_base_url").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if !public_url.starts_with("https://") {
+            crate::operator_log::info(
+                module_path!(),
+                format!(
+                    "[wizard] webhook skipped provider={} (public_base_url is not HTTPS: {})",
+                    provider_id, public_url
+                ),
+            );
+            continue;
+        }
+
+        let pack_path = bundle.join("packs").join(format!("{provider_id}.gtpack"));
+        let pack = crate::domains::ProviderPack {
+            pack_id: provider_id.clone(),
+            file_name: pack_path
+                .file_name()
+                .and_then(|v| v.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            path: pack_path,
+            entry_flows: Vec::new(),
+        };
+
+        for tenant in &tenant_ids {
+            let config = serde_json::Value::Object(obj.clone());
+            match crate::onboard::webhook_setup::try_provider_setup_webhook(
+                bundle,
+                crate::domains::Domain::Messaging,
+                &pack,
+                provider_id,
+                tenant,
+                None,
+                &config,
+            ) {
+                Some(result) => {
+                    let ok = result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if ok {
+                        crate::operator_log::info(
+                            module_path!(),
+                            format!(
+                                "[wizard] webhook auto-setup ok provider={} tenant={} result={}",
+                                provider_id, tenant, result
+                            ),
+                        );
+                        println!(
+                            "webhook: {} registered ({})",
+                            provider_id,
+                            result.get("webhook_url").and_then(|v| v.as_str()).unwrap_or("ok")
+                        );
+                    } else {
+                        crate::operator_log::warn(
+                            module_path!(),
+                            format!(
+                                "[wizard] webhook auto-setup failed provider={} tenant={} result={}",
+                                provider_id, tenant, result
+                            ),
+                        );
+                        let err = result.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        println!("webhook: {} failed ({})", provider_id, err);
+                    }
+                }
+                None => {
+                    crate::operator_log::info(
+                        module_path!(),
+                        format!(
+                            "[wizard] webhook skipped provider={} (unsupported or missing config)",
+                            provider_id
+                        ),
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn upsert_provider_registry(bundle: &Path, packs: &[ResolvedPackInfo]) -> anyhow::Result<usize> {

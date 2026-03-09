@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "greentic-runner-host"
-version = "0.4.60"
+version = "0.4.63"
 build = false
 autolib = false
 autobins = false

@@ -16,6 +16,110 @@
         "fallback": "Slack"
       },
       "ref": "repo://messaging/providers/messaging-slack@latest"
+    },
+    {
+      "id": "messaging-teams",
+      "label": {
+        "i18n_key": "provider.messaging.teams",
+        "fallback": "Microsoft Teams"
+      },
+      "ref": "repo://messaging/providers/messaging-teams@latest"
+    },
+    {
+      "id": "messaging-whatsapp",
+      "label": {
+        "i18n_key": "provider.messaging.whatsapp",
+        "fallback": "WhatsApp"
+      },
+      "ref": "repo://messaging/providers/messaging-whatsapp@latest"
+    },
+    {
+      "id": "messaging-webex",
+      "label": {
+        "i18n_key": "provider.messaging.webex",
+        "fallback": "Cisco Webex"
+      },
+      "ref": "repo://messaging/providers/messaging-webex@latest"
+    },
+    {
+      "id": "messaging-webchat",
+      "label": {
+        "i18n_key": "provider.messaging.webchat",
+        "fallback": "Web Chat"
+      },
+      "ref": "repo://messaging/providers/messaging-webchat@latest"
+    },
+    {
+      "id": "messaging-email",
+      "label": {
+        "i18n_key": "provider.messaging.email",
+        "fallback": "Email"
+      },
+      "ref": "repo://messaging/providers/messaging-email@latest"
+    },
+    {
+      "id": "messaging-dummy",
+      "label": {
+        "i18n_key": "provider.messaging.dummy",
+        "fallback": "Dummy (Testing)"
+      },
+      "ref": "repo://messaging/providers/messaging-dummy@latest"
+    },
+    {
+      "id": "greentic.events.webhook",
+      "label": {
+        "i18n_key": "provider.events.webhook",
+        "fallback": "Webhook Events"
+      },
+      "ref": "repo://events/providers/greentic.events.webhook@latest"
+    },
+    {
+      "id": "greentic.events.email",
+      "label": {
+        "i18n_key": "provider.events.email",
+        "fallback": "Email Events"
+      },
+      "ref": "repo://events/providers/greentic.events.email@latest"
+    },
+    {
+      "id": "greentic.events.email.sendgrid",
+      "label": {
+        "i18n_key": "provider.events.email.sendgrid",
+        "fallback": "Email via SendGrid"
+      },
+      "ref": "repo://events/providers/greentic.events.email.sendgrid@latest"
+    },
+    {
+      "id": "greentic.events.sms",
+      "label": {
+        "i18n_key": "provider.events.sms",
+        "fallback": "SMS Events"
+      },
+      "ref": "repo://events/providers/greentic.events.sms@latest"
+    },
+    {
+      "id": "greentic.events.sms.twilio",
+      "label": {
+        "i18n_key": "provider.events.sms.twilio",
+        "fallback": "SMS via Twilio"
+      },
+      "ref": "repo://events/providers/greentic.events.sms.twilio@latest"
+    },
+    {
+      "id": "greentic.events.timer",
+      "label": {
+        "i18n_key": "provider.events.timer",
+        "fallback": "Timer/Scheduler"
+      },
+      "ref": "repo://events/providers/greentic.events.timer@latest"
+    },
+    {
+      "id": "greentic.events.provider.dummy",
+      "label": {
+        "i18n_key": "provider.events.dummy",
+        "fallback": "Events Dummy (Testing)"
+      },
+      "ref": "repo://events/providers/greentic.events.provider.dummy@latest"
     }
   ]
 }

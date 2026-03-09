@@ -41,6 +41,7 @@ pub mod secrets_client;
 pub mod secrets_gate;
 pub mod secrets_manager;
 pub mod secrets_setup;
+pub mod capability_bootstrap;
 pub mod services;
 pub mod setup_input;
 pub mod setup_to_formspec;
