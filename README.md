@@ -7,12 +7,12 @@ It manages tenants/teams, access mapping (.gmap), pack/provider discovery, resol
 
 ```bash
 mkdir my-demo && cd my-demo
-greentic-operator demo new demo-bundle
+gtc op demo new demo-bundle
 # drop provider packs into providers/messaging/ and providers/events/
 # drop packs into packs/
-greentic-operator demo setup --bundle demo-bundle --tenant default --team default
-greentic-operator demo build --bundle demo-bundle --tenant default --team default
-greentic-operator demo start --bundle demo-bundle --tenant default --team default
+gtc op demo setup --bundle demo-bundle --tenant default --team default
+gtc op demo build --bundle demo-bundle --tenant default --team default
+gtc op demo start --bundle demo-bundle --tenant default --team default
 ```
 
 `demo start` is the canonical, long-running invocation: it boots the demo services in the foreground and waits for **Ctrl+C** to trigger a clean shutdown sequence. Press **Ctrl+C** in the terminal running the command to stop the services.
@@ -39,41 +39,41 @@ Team rules override tenant rules.
 
 Demo bundles
 
-greentic-operator demo build --out demo-bundle --tenant tenant1 --team team1
-greentic-operator demo start --bundle demo-bundle --tenant tenant1 --team team1
+gtc op demo build --out demo-bundle --tenant tenant1 --team team1
+gtc op demo start --bundle demo-bundle --tenant tenant1 --team team1
 Note: demo bundles require CBOR-only packs (`manifest.cbor`). Rebuild packs with `greentic-pack build` (avoid `--dev`).
 
 ### allow/forbid commands
 
 There are two sets of gmap editing helpers:
 
-- `greentic-operator demo allow/forbid` is meant for portable bundles. Supply `--bundle <DIR>` plus `--tenant`/`--team` and pass the same `PACK[/FLOW[/NODE]]` path. The command rewrites the bundle’s gmap, reruns the resolver, and copies the updated `state/resolved/<tenant>[.<team>].yaml` into `resolved/`, so `demo start` immediately sees the change.
+- `gtc op demo allow/forbid` is meant for portable bundles. Supply `--bundle <DIR>` plus `--tenant`/`--team` and pass the same `PACK[/FLOW[/NODE]]` path. The command rewrites the bundle’s gmap, reruns the resolver, and copies the updated `state/resolved/<tenant>[.<team>].yaml` into `resolved/`, so `demo start` immediately sees the change.
 
 Paths must contain at most three segments. Passing `PACK/FLOW/NODE/EXTRA` (or relative paths with more than three parts) will trigger the “too many segments” error you saw. Stick to the `pack`, `pack/flow`, or `pack/flow/node` forms.
 
 Demo send (generic)
 
-greentic-operator demo send --bundle demo-bundle --provider telegram --print-required-args
-greentic-operator demo send --bundle demo-bundle --provider telegram --text "hi" --arg chat_id=123
-greentic-operator demo send --bundle demo-bundle --provider telegram --card cards/welcome.json --arg chat_id=123
+gtc op demo send --bundle demo-bundle --provider telegram --print-required-args
+gtc op demo send --bundle demo-bundle --provider telegram --text "hi" --arg chat_id=123
+gtc op demo send --bundle demo-bundle --provider telegram --card cards/welcome.json --arg chat_id=123
 
 Demo new (bundle scaffold)
 
-greentic-operator demo new demo-bundle
-greentic-operator demo new demo-bundle --out /tmp
+gtc op demo new demo-bundle
+gtc op demo new demo-bundle --out /tmp
 
 Creates the directory layout plus minimal metadata (`greentic.demo.yaml`, `tenants/default/tenant.gmap`, `providers/*`, `state`, `resolved`, `logs`, etc.) so you can start adding packs and tenant definitions before running `demo setup`/`demo build`.
 
 Demo receive (incoming)
 
-Terminal A: `greentic-operator demo receive --bundle demo-bundle`
-Terminal B: `greentic-operator demo send --bundle demo-bundle --provider telegram --text "hi" --arg chat_id=123`
+Terminal A: `gtc op demo receive --bundle demo-bundle`
+Terminal B: `gtc op demo send --bundle demo-bundle --provider telegram --text "hi" --arg chat_id=123`
 
 `demo receive` listens for the bundle's messaging ingress subjects, streams each message to stdout, and appends a JSON line to `incoming.log`. Use `--provider` to focus on a single provider or `--all`/default to watch every enabled messaging pack.
 
 ### demo ingress (synthetic HTTP)
 
-`greentic-operator demo ingress` lets you exercise the universal HTTP ingress and operator outbound pipeline without running a full HTTP gateway. It constructs an `HttpInV1` body, invokes the provider `ingest_http` flow, prints the HTTP response plus any `ChannelMessageEnvelope` events, and (with `--end-to-end`) pushes the events through the app + render/encode/send flow.
+`gtc op demo ingress` lets you exercise the universal HTTP ingress and operator outbound pipeline without running a full HTTP gateway. It constructs an `HttpInV1` body, invokes the provider `ingest_http` flow, prints the HTTP response plus any `ChannelMessageEnvelope` events, and (with `--end-to-end`) pushes the events through the app + render/encode/send flow.
 
 Key flags:
 
@@ -148,8 +148,8 @@ instead of relying on `cargo binstall` or `$PATH`:
 ```bash
 greentic-operator dev on --root /projects/ai/greenticai --profile debug
 greentic-operator dev detect --root /projects/ai/greenticai --profile debug --dry-run
-greentic-operator demo start --bundle demo-bundle --tenant default --team default
-greentic-operator demo doctor
+gtc op demo start --bundle demo-bundle --tenant default --team default
+gtc op demo doctor
 ```
 
 Config (greentic.yaml) supports dev mode defaults and explicit binary overrides:
@@ -178,7 +178,7 @@ appropriate equivalents on macOS/Windows). Use `greentic-operator dev status` to
 
 ## Demo service config
 
-`greentic-operator demo start` reads the `services` section of `greentic.yaml` to decide which gateway/egress/subscriptions components to launch, but demo bundles no longer copy or depend on the `gsm-*` binaries listed in earlier docs. The operator now runs embedded implementations of the gateway/egress/subscriptions services by default, so you only need to override `services.gateway.binary`, `services.egress.binary`, or `services.subscriptions.*.binary` when pointing to a custom executable outside the embedded runtime. By default, demo start does **not** spawn local NATS (`--nats=off`), but you can opt into the legacy GSM NATS stack with `--nats=on` (this prints a warning) or attach to an external NATS server via `--nats=external --nats-url <URL>`.
+`gtc op demo start` reads the `services` section of `greentic.yaml` to decide which gateway/egress/subscriptions components to launch, but demo bundles no longer copy or depend on the `gsm-*` binaries listed in earlier docs. The operator now runs embedded implementations of the gateway/egress/subscriptions services by default, so you only need to override `services.gateway.binary`, `services.egress.binary`, or `services.subscriptions.*.binary` when pointing to a custom executable outside the embedded runtime. By default, demo start does **not** spawn local NATS (`--nats=off`), but you can opt into the legacy GSM NATS stack with `--nats=on` (this prints a warning) or attach to an external NATS server via `--nats=external --nats-url <URL>`.
 
 When the demo bundle exposes a gateway host/port (either via `greentic.demo.yaml` or `greentic.yaml`), an always-on HTTP ingress server listens on `http://<gateway-listen-addr>:<gateway-port>` and routes any POST/GET to `/{domain}/ingress/{provider}/{tenant}/{team?}` through the runner-host flows (`handle-webhook` ➜ `ingest`). Responses include the flow outcome (success, mode, outputs, errors) as structured JSON and are logged alongside the existing `demo receive` pipeline. `demo start` also logs `embedded runner mode; gateway/egress disabled` when it avoids launching the legacy GSM services, so the CLI stays on the embedded path unless `--nats=on` is explicitly requested.
 
@@ -196,7 +196,7 @@ When the demo bundle exposes a gateway host/port (either via `greentic.demo.yaml
 Only one tunnel should be active at a time. To use ngrok instead of cloudflared:
 
 ```bash
-greentic-operator demo start --bundle demo-bundle \
+gtc op demo start --bundle demo-bundle \
   --cloudflared off --ngrok on
 ```
 
@@ -206,7 +206,7 @@ Binary resolution follows the standard order: explicit `--*-binary` flag, `GREEN
 
 ## Demo subscriptions mode
 
-`greentic-operator demo start` defaults to the embedded universal subscriptions scheduler. Use `services.subscriptions.mode` in `greentic.yaml` to switch between the legacy GSM binary and the provider-op driven implementation:
+`gtc op demo start` defaults to the embedded universal subscriptions scheduler. Use `services.subscriptions.mode` in `greentic.yaml` to switch between the legacy GSM binary and the provider-op driven implementation:
 
 ```yaml
 services:
@@ -228,7 +228,7 @@ services:
 
 The universal scheduler calls the provider `subscription_*` ops (using the shared `messaging_universal_dto` contract) and persists binding metadata under `state/subscriptions/<provider>/<tenant>/<team>/<binding_id>.json`. The stored `AuthUserRefV1` is reused when renewing or deleting subscriptions, which keeps delegated email/Teams contexts intact.
 
-Use `greentic-operator demo subscriptions` to manage bindings manually:
+Use `gtc op demo subscriptions` to manage bindings manually:
 
 - `demo subscriptions ensure` invokes `subscription_ensure`, stores the binding, and prints its path.
 - `demo subscriptions status` lists persisted bindings plus expiry timestamps.

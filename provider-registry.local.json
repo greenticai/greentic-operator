@@ -1,0 +1,69 @@
+{
+  "registry_version": "providers@1",
+  "items": [
+    {
+      "id": "messaging-telegram",
+      "label": {
+        "i18n_key": "provider.messaging.telegram",
+        "fallback": "Telegram"
+      },
+      "ref": "file:///home/bimbim/works/greentic/demo-all-providers/packs/messaging-telegram.gtpack"
+    },
+    {
+      "id": "messaging-slack",
+      "label": {
+        "i18n_key": "provider.messaging.slack",
+        "fallback": "Slack"
+      },
+      "ref": "file:///home/bimbim/works/greentic/demo-all-providers/packs/messaging-slack.gtpack"
+    },
+    {
+      "id": "messaging-teams",
+      "label": {
+        "i18n_key": "provider.messaging.teams",
+        "fallback": "Microsoft Teams"
+      },
+      "ref": "file:///home/bimbim/works/greentic/demo-all-providers/packs/messaging-teams.gtpack"
+    },
+    {
+      "id": "messaging-whatsapp",
+      "label": {
+        "i18n_key": "provider.messaging.whatsapp",
+        "fallback": "WhatsApp"
+      },
+      "ref": "file:///home/bimbim/works/greentic/demo-all-providers/packs/messaging-whatsapp.gtpack"
+    },
+    {
+      "id": "messaging-webex",
+      "label": {
+        "i18n_key": "provider.messaging.webex",
+        "fallback": "Cisco Webex"
+      },
+      "ref": "file:///home/bimbim/works/greentic/demo-all-providers/packs/messaging-webex.gtpack"
+    },
+    {
+      "id": "messaging-webchat",
+      "label": {
+        "i18n_key": "provider.messaging.webchat",
+        "fallback": "Web Chat"
+      },
+      "ref": "file:///home/bimbim/works/greentic/demo-all-providers/packs/messaging-webchat.gtpack"
+    },
+    {
+      "id": "messaging-email",
+      "label": {
+        "i18n_key": "provider.messaging.email",
+        "fallback": "Email"
+      },
+      "ref": "file:///home/bimbim/works/greentic/demo-all-providers/packs/messaging-email.gtpack"
+    },
+    {
+      "id": "messaging-dummy",
+      "label": {
+        "i18n_key": "provider.messaging.dummy",
+        "fallback": "Dummy (Testing)"
+      },
+      "ref": "file:///home/bimbim/works/greentic/demo-all-providers/packs/messaging-dummy.gtpack"
+    }
+  ]
+}

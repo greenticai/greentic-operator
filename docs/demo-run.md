@@ -5,7 +5,7 @@
 Use `demo list-packs` to see what provider packs are installed for a domain:
 
 ```
-greentic-operator demo list-packs --bundle /path/to/bundle --domain messaging
+gtc op demo list-packs --bundle /path/to/bundle --domain messaging
 ```
 
 The command prints each `pack_id`, how many entry flows it exposes, and the filename under `providers/messaging`.
@@ -15,7 +15,7 @@ The command prints each `pack_id`, how many entry flows it exposes, and the file
 To learn which flows a pack exposes, run:
 
 ```
-greentic-operator demo list-flows --bundle /path/to/bundle --pack messaging-telegram --domain messaging
+gtc op demo list-flows --bundle /path/to/bundle --pack messaging-telegram --domain messaging
 ```
 
 That prints the entry flow IDs you can pass via `--flow` to `demo run` or `demo send`.
@@ -25,7 +25,7 @@ That prints the entry flow IDs you can pass via `--flow` to `demo run` or `demo 
 The `demo run` command executes a manifest flow with inline JSON input:
 
 ```
-greentic-operator demo run --packs-dir ./packs --pack messaging-telegram --tenant demo --flow default --input '{"trigger":"start"}'
+gtc op demo run --packs-dir ./packs --pack messaging-telegram --tenant demo --flow default --input '{"trigger":"start"}'
 ```
 
 The command prints a short run summary, including which pack/flow/tenant were used and the input source, followed by the flow result and exit status.

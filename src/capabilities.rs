@@ -13,6 +13,7 @@ use crate::domains::Domain;
 pub const EXT_CAPABILITIES_V1: &str = "greentic.ext.capabilities.v1";
 pub const CAP_OP_HOOK_PRE: &str = "greentic.cap.op_hook.pre";
 pub const CAP_OP_HOOK_POST: &str = "greentic.cap.op_hook.post";
+pub const CAP_MESSAGING_V1: &str = "greentic.cap.messaging.provider.v1";
 pub const CAP_OAUTH_BROKER_V1: &str = "greentic.cap.oauth.broker.v1";
 pub const CAP_OAUTH_CARD_V1: &str = "greentic.cap.oauth.card.v1";
 pub const CAP_OAUTH_TOKEN_VALIDATION_V1: &str = "greentic.cap.oauth.token_validation.v1";
@@ -234,6 +235,29 @@ impl CapabilityRegistry {
                 .then_with(|| a.stable_id.cmp(&b.stable_id))
         });
         selected
+    }
+
+    /// Validate messaging capability offers in the registry.
+    pub fn validate_messaging_offers(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let offers = self.offers_for_capability(CAP_MESSAGING_V1);
+
+        for offer in offers {
+            if offer.provider_op != "messaging.configure" {
+                warnings.push(format!(
+                    "messaging offer '{}' uses non-standard op '{}' (expected 'messaging.configure')",
+                    offer.stable_id, offer.provider_op
+                ));
+            }
+            if offer.requires_setup && offer.setup_qa_ref.is_none() {
+                warnings.push(format!(
+                    "messaging offer '{}' requires setup but has no setup.qa_ref",
+                    offer.stable_id
+                ));
+            }
+        }
+
+        warnings
     }
 }
 
@@ -732,5 +756,116 @@ mod tests {
         zip.write_all(&bytes)?;
         zip.finish()?;
         Ok(())
+    }
+
+    // -- Messaging capability tests --
+
+    fn make_messaging_offer(
+        stable_id: &str,
+        provider_op: &str,
+        requires_setup: bool,
+        setup_qa_ref: Option<&str>,
+    ) -> CapabilityOfferRecord {
+        CapabilityOfferRecord {
+            stable_id: stable_id.to_string(),
+            pack_id: "messaging-telegram".to_string(),
+            domain: Domain::Messaging,
+            pack_path: PathBuf::from("dummy.gtpack"),
+            cap_id: CAP_MESSAGING_V1.to_string(),
+            version: "v1".to_string(),
+            provider_component_ref: "messaging-provider-telegram".to_string(),
+            provider_op: provider_op.to_string(),
+            priority: 100,
+            requires_setup,
+            setup_qa_ref: setup_qa_ref.map(String::from),
+            scope: CapabilityScopeV1::default(),
+            applies_to_ops: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn validate_messaging_no_offers_returns_empty() {
+        let registry = CapabilityRegistry::default();
+        assert!(registry.validate_messaging_offers().is_empty());
+    }
+
+    #[test]
+    fn validate_messaging_standard_offer_no_warnings() {
+        let mut by_cap_id = BTreeMap::new();
+        by_cap_id.insert(
+            CAP_MESSAGING_V1.to_string(),
+            vec![make_messaging_offer(
+                "messaging-telegram-v1",
+                "messaging.configure",
+                true,
+                Some("setup.yaml"),
+            )],
+        );
+        let registry = CapabilityRegistry { by_cap_id };
+        assert!(registry.validate_messaging_offers().is_empty());
+    }
+
+    #[test]
+    fn validate_messaging_multiple_offers_is_ok() {
+        let mut by_cap_id = BTreeMap::new();
+        by_cap_id.insert(
+            CAP_MESSAGING_V1.to_string(),
+            vec![
+                make_messaging_offer(
+                    "offer-telegram",
+                    "messaging.configure",
+                    true,
+                    Some("setup.yaml"),
+                ),
+                make_messaging_offer(
+                    "offer-slack",
+                    "messaging.configure",
+                    true,
+                    Some("setup.yaml"),
+                ),
+            ],
+        );
+        let registry = CapabilityRegistry { by_cap_id };
+        assert!(registry.validate_messaging_offers().is_empty());
+    }
+
+    #[test]
+    fn validate_messaging_warns_on_non_standard_op() {
+        let mut by_cap_id = BTreeMap::new();
+        by_cap_id.insert(
+            CAP_MESSAGING_V1.to_string(),
+            vec![make_messaging_offer(
+                "offer-custom",
+                "custom.init",
+                false,
+                None,
+            )],
+        );
+        let registry = CapabilityRegistry { by_cap_id };
+        let warnings = registry.validate_messaging_offers();
+        assert!(
+            warnings.iter().any(|w| w.contains("non-standard op")),
+            "expected 'non-standard op' warning: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_messaging_warns_on_missing_qa_ref() {
+        let mut by_cap_id = BTreeMap::new();
+        by_cap_id.insert(
+            CAP_MESSAGING_V1.to_string(),
+            vec![make_messaging_offer(
+                "offer-no-qa",
+                "messaging.configure",
+                true,
+                None,
+            )],
+        );
+        let registry = CapabilityRegistry { by_cap_id };
+        let warnings = registry.validate_messaging_offers();
+        assert!(
+            warnings.iter().any(|w| w.contains("no setup.qa_ref")),
+            "expected 'no setup.qa_ref' warning: {warnings:?}"
+        );
     }
 }

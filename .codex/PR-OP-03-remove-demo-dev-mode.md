@@ -65,7 +65,7 @@ Refactor the operator to keep only active CLI/demo code paths:
 - `cargo build --bin greentic-operator` passes.
 - `cargo test -q` passes.
 - Demo doctor path passes:
-  - `greentic-operator demo doctor --bundle <bundle>`
+  - `gtc op demo doctor --bundle <bundle>`
 
 ## Security/Reliability rationale
 - Removes accidental dependence on local source-tree build artifacts for demo operations.

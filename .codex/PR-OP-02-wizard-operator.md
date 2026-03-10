@@ -44,7 +44,7 @@ CLI → Build QaSpec → greentic-qa.run() → Answers
 
 
 greentic-operator wizard ...
-greentic-operator demo wizard ...
+gtc op demo wizard ...
 
 
 `wizard` is a direct alias for `demo wizard`.
@@ -626,7 +626,7 @@ If repo already has canonical provider-manifest location, use it with same upser
 
 ### 10) Wizard alias help text + command tree ordering
 
-- `greentic-operator wizard` and `greentic-operator demo wizard` are equal peers in help.
+- `greentic-operator wizard` and `gtc op demo wizard` are equal peers in help.
 - Document `wizard` as preferred primary.
 - Keep `demo wizard` for compatibility.
 - Help text for `demo wizard` should say it is an alias of `wizard`.

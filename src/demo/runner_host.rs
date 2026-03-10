@@ -200,6 +200,15 @@ impl DemoRunnerHost {
         &self.secrets_handle
     }
 
+    pub fn state_store(&self) -> DynStateStore {
+        self.state_store.clone()
+    }
+
+    /// Replace the state store (e.g. upgrade from in-memory to Redis).
+    pub fn set_state_store(&mut self, store: DynStateStore) {
+        self.state_store = store;
+    }
+
     pub fn new(
         bundle_root: PathBuf,
         discovery: &discovery::DiscoveryResult,
@@ -361,6 +370,13 @@ impl DemoRunnerHost {
         payload_bytes: &[u8],
         ctx: &OperatorContext,
     ) -> anyhow::Result<FlowOutcome> {
+        let _span = tracing::info_span!(
+            "invoke_capability",
+            cap_id = %cap_id,
+            op = %op,
+            tenant = %ctx.tenant,
+        )
+        .entered();
         let requested_op = op.trim();
         if cap_id == CAP_OAUTH_BROKER_V1 {
             if requested_op.is_empty() {
@@ -499,6 +515,13 @@ impl DemoRunnerHost {
         payload_bytes: &[u8],
         ctx: &OperatorContext,
     ) -> anyhow::Result<FlowOutcome> {
+        let _span = tracing::info_span!(
+            "invoke_provider_op",
+            provider = %provider_type,
+            op = %op_id,
+            tenant = %ctx.tenant,
+        )
+        .entered();
         let mut envelope = OperationEnvelope::new(op_id, payload_bytes, ctx);
         let token_validation_outcome =
             self.evaluate_token_validation_pre_hook(&mut envelope, payload_bytes, ctx)?;
@@ -960,89 +983,80 @@ impl DemoRunnerHost {
         let payload = payload_bytes.to_vec();
         let result = make_runtime_or_thread_scope(|runtime| {
             runtime.block_on(async {
-            let host_config = Arc::new(build_demo_host_config(&ctx.tenant));
-            // Re-open the dev store on each invocation so newly-written secrets
-            // (e.g. from QA wizard submit) are visible without restarting the demo.
-            let fresh_secrets = secrets_gate::resolve_secrets_manager(
-                &self.bundle_root,
-                &ctx.tenant,
-                ctx.team.as_deref(),
-            )
-            .unwrap_or_else(|_| self.secrets_handle.clone());
-            let dev_store_display = fresh_secrets
-                .dev_store_path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<default>".to_string());
-            operator_log::info(
-                module_path!(),
-                format!(
-                    "secrets backend for wasm: using_env_fallback={} dev_store={}",
-                    fresh_secrets.using_env_fallback, dev_store_display,
-                ),
-            );
-            operator_log::info(
-                module_path!(),
-                format!(
-                    "exec secrets: dev_store={} env_fallback={}",
-                    dev_store_display, fresh_secrets.using_env_fallback,
-                ),
-            );
-            let pack_runtime = PackRuntime::load(
-                &pack.path,
-                host_config.clone(),
-                None,
-                Some(&pack.path),
-                None::<DynSessionStore>,
-                Some(self.state_store.clone()),
-                Arc::new(RunnerWasiPolicy::default()),
-                fresh_secrets.runtime_manager(Some(&pack.pack_id)),
-                None,
-                false,
-                ComponentResolution::default(),
-            )
-            .await?;
-            let provider_type = primary_provider_type(&pack.path)
-                .context("failed to determine provider type for direct invocation")?;
-            let env_value = env::var("GREENTIC_ENV").unwrap_or_else(|_| "<unset>".to_string());
-            let canonical_team = secrets_manager::canonical_team(ctx.team.as_deref()).into_owned();
-            let runner_dev_store_desc = self
-                .secrets_handle
-                .dev_store_path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string());
-            eprintln!(
-                "secrets runner ctx: env={} tenant={} canonical_team={} provider_id={} pack_id={} dev_store_path={} using_env_fallback={}",
-                env_value,
-                ctx.tenant,
-                canonical_team,
-                provider_type,
-                pack.pack_id,
-                runner_dev_store_desc,
-                self.secrets_handle.using_env_fallback,
-            );
-            let binding = pack_runtime.resolve_provider(None, Some(&provider_type))?;
-            let exec_ctx = ComponentExecCtx {
-                tenant: ComponentTenantCtx {
-                    tenant: ctx.tenant.clone(),
-                    team: ctx.team.clone(),
+                let host_config = Arc::new(build_demo_host_config(&ctx.tenant));
+                // Re-open the dev store on each invocation so newly-written secrets
+                // (e.g. from QA wizard submit) are visible without restarting the demo.
+                let fresh_secrets = secrets_gate::resolve_secrets_manager(
+                    &self.bundle_root,
+                    &ctx.tenant,
+                    ctx.team.as_deref(),
+                )
+                .unwrap_or_else(|_| self.secrets_handle.clone());
+                let dev_store_display = fresh_secrets
+                    .dev_store_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<default>".to_string());
+                operator_log::info(
+                    module_path!(),
+                    format!(
+                        "secrets backend for wasm: using_env_fallback={} dev_store={}",
+                        fresh_secrets.using_env_fallback, dev_store_display,
+                    ),
+                );
+                operator_log::info(
+                    module_path!(),
+                    format!(
+                        "exec secrets: dev_store={} env_fallback={}",
+                        dev_store_display, fresh_secrets.using_env_fallback,
+                    ),
+                );
+                let pack_runtime = PackRuntime::load(
+                    &pack.path,
+                    host_config.clone(),
+                    None,
+                    Some(&pack.path),
+                    None::<DynSessionStore>,
+                    Some(self.state_store.clone()),
+                    Arc::new(RunnerWasiPolicy::default()),
+                    fresh_secrets.runtime_manager(Some(&pack.pack_id)),
+                    None,
+                    false,
+                    ComponentResolution::default(),
+                )
+                .await?;
+                let provider_type = primary_provider_type(&pack.path)
+                    .context("failed to determine provider type for direct invocation")?;
+                let _env_value = env::var("GREENTIC_ENV").unwrap_or_else(|_| "<unset>".to_string());
+                let _canonical_team =
+                    secrets_manager::canonical_team(ctx.team.as_deref()).into_owned();
+                let _runner_dev_store_desc = self
+                    .secrets_handle
+                    .dev_store_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string());
+                let binding = pack_runtime.resolve_provider(None, Some(&provider_type))?;
+                let exec_ctx = ComponentExecCtx {
+                    tenant: ComponentTenantCtx {
+                        tenant: ctx.tenant.clone(),
+                        team: ctx.team.clone(),
+                        i18n_id: None,
+                        user: None,
+                        trace_id: None,
+                        correlation_id: ctx.correlation_id.clone(),
+                        deadline_unix_ms: None,
+                        attempt: 1,
+                        idempotency_key: None,
+                    },
                     i18n_id: None,
-                    user: None,
-                    trace_id: None,
-                    correlation_id: ctx.correlation_id.clone(),
-                    deadline_unix_ms: None,
-                    attempt: 1,
-                    idempotency_key: None,
-                },
-                i18n_id: None,
-                flow_id: op_id.to_string(),
-                node_id: Some(op_id.to_string()),
-            };
-            pack_runtime
-                .invoke_provider(&binding, exec_ctx, op_id, payload)
-                .await
-        })
+                    flow_id: op_id.to_string(),
+                    node_id: Some(op_id.to_string()),
+                };
+                pack_runtime
+                    .invoke_provider(&binding, exec_ctx, op_id, payload)
+                    .await
+            })
         });
 
         match result {
@@ -1079,6 +1093,11 @@ impl DemoRunnerHost {
 }
 
 pub fn primary_provider_type(pack_path: &Path) -> anyhow::Result<String> {
+    // Try pack.manifest.json first (source of truth) before falling back to
+    // manifest.cbor, which may contain a stale provider_type after pack builds.
+    if let Ok(json_type) = primary_provider_type_from_json(pack_path) {
+        return Ok(json_type);
+    }
     let file = std::fs::File::open(pack_path)?;
     let mut archive = ZipArchive::new(file)?;
     let mut manifest_entry = archive.by_name("manifest.cbor").map_err(|err| {
@@ -1104,6 +1123,21 @@ pub fn primary_provider_type(pack_path: &Path) -> anyhow::Result<String> {
         )
     })?;
     Ok(provider.provider_type.clone())
+}
+
+/// Read provider_type from pack.manifest.json inside the archive.
+fn primary_provider_type_from_json(pack_path: &Path) -> anyhow::Result<String> {
+    let file = std::fs::File::open(pack_path)?;
+    let mut archive = ZipArchive::new(file)?;
+    let entry = archive
+        .by_name("pack.manifest.json")
+        .map_err(|_| anyhow!("pack.manifest.json not found in {}", pack_path.display()))?;
+    let manifest: serde_json::Value = serde_json::from_reader(entry)?;
+    let provider_type = manifest
+        .pointer("/extensions/0/payload/providers/0/provider_type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("provider_type not found in pack.manifest.json"))?;
+    Ok(provider_type.to_string())
 }
 
 fn needs_secret_context(message: &str) -> bool {
@@ -1324,13 +1358,34 @@ fn pack_supports_provider_op(pack_path: &Path, op_id: &str) -> anyhow::Result<bo
     manifest_entry.read_to_end(&mut bytes)?;
     let manifest = decode_pack_manifest(&bytes)
         .context("failed to decode pack manifest for op support introspection")?;
-    let Some(provider_ext) = manifest.provider_extension_inline() else {
-        return Ok(false);
-    };
-    Ok(provider_ext
-        .providers
-        .iter()
-        .any(|provider| provider.ops.iter().any(|op| op == op_id)))
+    if let Some(provider_ext) = manifest.provider_extension_inline() {
+        if provider_ext
+            .providers
+            .iter()
+            .any(|provider| provider.ops.iter().any(|op| op == op_id))
+        {
+            return Ok(true);
+        }
+    }
+    // Fallback: if op is ingest_http, check for messaging-provider-* or messaging-ingress-*
+    // component in pack. Some pack builds omit ingest_http from provider ops even though
+    // the provider component implements it.
+    if op_id == "ingest_http" {
+        drop(manifest_entry);
+        drop(bytes);
+        let file2 = std::fs::File::open(pack_path)?;
+        let archive2 = ZipArchive::new(file2)?;
+        for i in 0..archive2.len() {
+            if let Some(name) = archive2.name_for_index(i) {
+                if name.ends_with(".wasm")
+                    && (name.contains("messaging-ingress-") || name.contains("messaging-provider-"))
+                {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(unix)]

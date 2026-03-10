@@ -1354,16 +1354,16 @@ impl PackRuntime {
         if !self.config.state_store_policy.allow {
             return false;
         }
-        let Some(manifest) = self.component_manifests.get(component_ref) else {
-            return false;
-        };
-        manifest
-            .capabilities
-            .host
-            .state
-            .as_ref()
-            .map(|caps| caps.read || caps.write)
-            .unwrap_or(false)
+        // If the manifest declares state capabilities, honour them.
+        // Otherwise default to allowing state store — some component manifests
+        // (e.g. webchat) omit the `host.state` capability even though the WASM
+        // component imports `greentic:state/state-store`.
+        if let Some(manifest) = self.component_manifests.get(component_ref) {
+            if let Some(caps) = manifest.capabilities.host.state.as_ref() {
+                return caps.read || caps.write;
+            }
+        }
+        true
     }
 
     pub fn contains_component(&self, component_ref: &str) -> bool {

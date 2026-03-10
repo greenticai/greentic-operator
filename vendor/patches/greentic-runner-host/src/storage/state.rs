@@ -30,6 +30,13 @@ pub fn new_state_store() -> DynStateStore {
     wrap_state_store(store)
 }
 
+/// Creates a Redis-backed state store from a connection URL.
+pub fn new_redis_state_store(redis_url: &str) -> Result<DynStateStore, greentic_types::GreenticError> {
+    use greentic_state::redis_store::RedisStateStore;
+    let store: DynStateStore = Arc::new(RedisStateStore::from_url(redis_url)?);
+    Ok(wrap_state_store(store))
+}
+
 pub fn state_host_from(store: DynStateStore) -> Arc<dyn StateHost> {
     Arc::new(StateStoreHost::new(store))
 }

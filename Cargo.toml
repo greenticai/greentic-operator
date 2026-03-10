@@ -37,6 +37,7 @@ pkg-fmt = "tgz"
 name = "greentic-operator"
 path = "src/main.rs"
 
+
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
@@ -54,6 +55,7 @@ greentic-qa-lib = "0.4"
 greentic-runner-desktop = { version = "0.4" }
 greentic-runner-host = { version = "0.4" }
 greentic-secrets-lib = { version = "0.4", features = ["providers-dev"] }
+greentic-telemetry = { version = "0.4", features = ["otlp", "fmt", "azure", "aws", "gcp", "payload-hash"] }
 greentic-types = { version = "0.4", features = ["serde"] }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
@@ -105,3 +107,5 @@ greentic-interfaces = { path = "vendor/patches/greentic-interfaces" }
 greentic-interfaces-guest = { path = "vendor/patches/greentic-interfaces-guest" }
 greentic-interfaces-host = { path = "vendor/patches/greentic-interfaces-host" }
 greentic-interfaces-wasmtime = { path = "vendor/patches/greentic-interfaces-wasmtime" }
+greentic-runner-host = { path = "vendor/patches/greentic-runner-host" }
+greentic-telemetry = { path = "../greentic-telemetry" }
