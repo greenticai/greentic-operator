@@ -1,6 +1,7 @@
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::too_many_arguments)]
 
+pub mod admin_api;
 pub mod bin_resolver;
 pub mod capabilities;
 pub mod capability_bootstrap;

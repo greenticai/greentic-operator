@@ -2593,14 +2593,18 @@ name = "greentic-setup"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "greentic-distributor-client",
  "greentic-secrets-lib",
+ "greentic-types",
+ "hmac",
  "qa-spec",
  "rpassword",
  "serde",
  "serde_cbor",
  "serde_json",
  "serde_yaml_gtc",
+ "sha2",
  "tokio",
  "tracing",
  "zip 2.4.2",
