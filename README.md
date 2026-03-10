@@ -17,6 +17,8 @@ gtc op demo start --bundle demo-bundle --tenant default --team default
 
 `demo start` is the canonical, long-running invocation: it boots the demo services in the foreground and waits for **Ctrl+C** to trigger a clean shutdown sequence. Press **Ctrl+C** in the terminal running the command to stop the services.
 
+Lifecycle ownership note: `greentic-operator demo start|up|stop|restart` delegates runtime lifecycle execution to `greentic-start`. Wizard, setup, and bundle UX remain in `greentic-operator`.
+
 Access mapping (.gmap)
 
 Rules are line-oriented:
@@ -108,15 +110,15 @@ services:
     enabled: auto   # auto|true|false
 ```
 
-## Capability bootstrap checks (setup/start)
+## Capability bootstrap checks (setup)
 
-`demo setup` and `demo start` run a capability bootstrap report before provider flow execution.
+`demo setup` runs a capability bootstrap report before provider flow execution. Lifecycle execution itself is delegated to `greentic-start`.
 
 - Required (domain-driven): messaging provider, events provider, and secrets store capabilities.
 - Recommended (when messaging/events are enabled): OAuth broker and MCP exec capabilities.
 - Migration compatibility: if secrets capability is not yet explicitly offered but secrets provider packs are present, Operator logs legacy fallback usage instead of failing required checks.
 
-Details: `docs/OPERATOR_MESSAGING_PROVIDER_INTEGRATION_GUIDE.md` (section "Capability bootstrap checks in setup/start").
+Details: `docs/OPERATOR_MESSAGING_PROVIDER_INTEGRATION_GUIDE.md` (section "Capability bootstrap checks in setup").
 
 ## Wizard Playbooks
 
@@ -178,13 +180,13 @@ appropriate equivalents on macOS/Windows). Use `greentic-operator dev status` to
 
 ## Demo service config
 
-`gtc op demo start` reads the `services` section of `greentic.yaml` to decide which gateway/egress/subscriptions components to launch, but demo bundles no longer copy or depend on the `gsm-*` binaries listed in earlier docs. The operator now runs embedded implementations of the gateway/egress/subscriptions services by default, so you only need to override `services.gateway.binary`, `services.egress.binary`, or `services.subscriptions.*.binary` when pointing to a custom executable outside the embedded runtime. By default, demo start does **not** spawn local NATS (`--nats=off`), but you can opt into the legacy GSM NATS stack with `--nats=on` (this prints a warning) or attach to an external NATS server via `--nats=external --nats-url <URL>`.
+`gtc op demo start` delegates lifecycle execution to `greentic-start`, which reads the `services` section of `greentic.yaml` / `greentic.demo.yaml` to decide which gateway/egress/subscriptions components to launch. By default, demo start does **not** spawn local NATS (`--nats=off`), but you can opt into the legacy GSM NATS stack with `--nats=on` (this prints a warning) or attach to an external NATS server via `--nats=external --nats-url <URL>`.
 
-When the demo bundle exposes a gateway host/port (either via `greentic.demo.yaml` or `greentic.yaml`), an always-on HTTP ingress server listens on `http://<gateway-listen-addr>:<gateway-port>` and routes any POST/GET to `/{domain}/ingress/{provider}/{tenant}/{team?}` through the runner-host flows (`handle-webhook` ➜ `ingest`). Responses include the flow outcome (success, mode, outputs, errors) as structured JSON and are logged alongside the existing `demo receive` pipeline. `demo start` also logs `embedded runner mode; gateway/egress disabled` when it avoids launching the legacy GSM services, so the CLI stays on the embedded path unless `--nats=on` is explicitly requested.
+When the demo bundle exposes a gateway host/port (either via `greentic.demo.yaml` or `greentic.yaml`), `greentic-start` runs the HTTP ingress and embedded lifecycle/runtime path. `demo start` also logs `embedded runner mode; gateway/egress disabled` when it avoids launching the legacy GSM services, so the CLI stays on the embedded path unless `--nats=on` is explicitly requested.
 
 ## Webhook tunneling
 
-`demo start` can automatically spawn a public tunnel so that external services (Telegram, Slack, Teams, etc.) can deliver webhooks to your local machine. Two tunnel backends are supported: **Cloudflare Tunnel** (default) and **ngrok**.
+`demo start` can automatically spawn a public tunnel through `greentic-start` so that external services (Telegram, Slack, Teams, etc.) can deliver webhooks to your local machine. Two tunnel backends are supported: **Cloudflare Tunnel** (default) and **ngrok**.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -200,13 +202,13 @@ gtc op demo start --bundle demo-bundle \
   --cloudflared off --ngrok on
 ```
 
-The discovered public URL is written to `state/runtime/<tenant>/<team>/public_base_url.txt` and injected into provider setup inputs automatically. Both backends can be restarted via `--restart ngrok` or `--restart cloudflared`.
+The discovered public URL is written to `state/runtime/<tenant>/<team>/public_base_url.txt`. Both backends can be restarted via `--restart ngrok` or `--restart cloudflared`.
 
 Binary resolution follows the standard order: explicit `--*-binary` flag, `GREENTIC_<NAME>` env var, `<bundle>/bin/`, `<bundle>/target/{debug,release}/`, then `$PATH`.
 
 ## Demo subscriptions mode
 
-`gtc op demo start` defaults to the embedded universal subscriptions scheduler. Use `services.subscriptions.mode` in `greentic.yaml` to switch between the legacy GSM binary and the provider-op driven implementation:
+`gtc op demo start` defaults to the embedded universal subscriptions scheduler provided by `greentic-start`. Use `services.subscriptions.mode` in `greentic.yaml` to switch between the legacy GSM binary and the provider-op driven implementation:
 
 ```yaml
 services:

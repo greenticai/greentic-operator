@@ -154,9 +154,9 @@ If you maintain external docs, align them with these implementation realities:
 2. Runtime import/export names are driven by generated bindings and runner-host registration, not legacy naming examples.
 3. `demo send` contract is `render_plan -> encode(using render output) -> send_payload`.
 
-## 10. Capability bootstrap checks in setup/start
+## 10. Capability bootstrap checks in setup
 
-`demo setup` and `demo start` now run a capability bootstrap report before provider flow execution.
+`demo setup` runs a capability bootstrap report before provider flow execution. Runtime lifecycle execution is delegated to `greentic-start`.
 
 Checks are scope-aware (env/tenant/team) and use Operator capability resolution:
 
@@ -172,6 +172,6 @@ Operator also logs pending capability setup offers from `capability setup-plan` 
 
 Compatibility note for secrets migration:
 
-- If `greentic.cap.secrets.store.v1` is not resolved yet, but secrets provider packs are present for the secrets domain, setup/start treats this as a legacy-provider fallback and logs an informational message instead of flagging it as missing-required.
+- If `greentic.cap.secrets.store.v1` is not resolved yet, but secrets provider packs are present for the secrets domain, setup treats this as a legacy-provider fallback and logs an informational message instead of flagging it as missing-required.
 
-This keeps setup/start aligned with capability-first orchestration, preserves existing secrets provider behavior during migration, and still surfaces missing OAuth/MCP/Secrets capabilities early without blocking existing flows by default.
+This keeps setup aligned with capability-first orchestration, preserves existing secrets provider behavior during migration, and still surfaces missing OAuth/MCP/Secrets capabilities early without blocking existing flows by default.
