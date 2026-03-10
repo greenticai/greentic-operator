@@ -4,6 +4,7 @@ use std::{
     convert::TryFrom,
     env, fs,
     io::{self, IsTerminal, Write},
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -13,6 +14,10 @@ use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
+use base64::Engine as _;
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use tokio::runtime::Runtime;
+
 use crate::bin_resolver::{self, ResolveCtx};
 use crate::capabilities::ResolveScope;
 use crate::config;
@@ -20,8 +25,11 @@ use crate::config_gate::{self, ConfigGateItem, ConfigValueSource};
 use crate::demo::{
     self, BuildOptions, DemoRepl, DemoRunner,
     card::{detect_adaptive_card_view, print_card_summary},
+    http_ingress::{HttpIngressConfig, HttpIngressServer},
     input as demo_input, pack_resolve,
     runner_host::{DemoRunnerHost, FlowOutcome, OperatorContext, primary_provider_type},
+    setup::{ProvidersInput, discover_tenants},
+    timer_scheduler::{TimerScheduler, TimerSchedulerConfig, discover_timer_handlers},
 };
 use crate::dev_store_path;
 use crate::discovery;
@@ -39,7 +47,7 @@ use crate::qa_setup_wizard;
 use crate::runner_exec;
 use crate::runner_integration;
 use crate::runtime_state::RuntimePaths;
-use crate::secrets_gate::{self, DynSecretsManager};
+use crate::secrets_gate::{self, DynSecretsManager, SecretsManagerHandle};
 use crate::secrets_manager;
 use crate::secrets_setup::resolve_env;
 use crate::setup_input::{SetupInputAnswers, collect_setup_answers, load_setup_input};
@@ -56,18 +64,11 @@ use crate::wizard_executor;
 use crate::wizard_i18n;
 use crate::wizard_plan_builder;
 use crate::wizard_spec_builder;
-use base64::Engine as _;
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use greentic_qa_lib::{
     I18nConfig, QaLibError, QaRunner, ResolvedI18nMap, WizardDriver, WizardFrontend,
     WizardRunConfig,
 };
 use greentic_runner_host::secrets::default_manager;
-use greentic_start::{
-    CloudflaredModeArg as StartCloudflaredModeArg, NatsModeArg as StartNatsModeArg,
-    NgrokModeArg as StartNgrokModeArg, RestartTarget as StartRestartTarget, StartRequest,
-    StopRequest, run_restart_request, run_start_request, run_stop_request,
-};
 use greentic_types::{ChannelMessageEnvelope, Destination, EnvId, TeamId, TenantCtx, TenantId};
 use std::time::Duration;
 use uuid::Uuid;
@@ -105,8 +106,6 @@ enum DemoSubcommand {
     #[command(hide = true)]
     Up(DemoUpArgs),
     Start(DemoUpArgs),
-    Restart(DemoUpArgs),
-    Stop(DemoStopArgs),
     Setup(DemoSetupArgs),
     Send(DemoSendArgs),
     #[command(about = "Send a synthetic HTTP request through the messaging ingress pipeline")]
@@ -204,7 +203,7 @@ struct DemoBuildArgs {
 #[derive(Parser)]
 #[command(
     about = "Start demo services from a bundle.",
-    long_about = "Delegates demo lifecycle execution to greentic-start using bundle/config runtime flags."
+    long_about = "Uses resolved manifests inside the bundle to start services and optional NATS."
 )]
 struct DemoUpArgs {
     #[arg(
@@ -213,6 +212,28 @@ struct DemoUpArgs {
         help = "Path to the bundle directory to run in bundle mode."
     )]
     bundle: Option<PathBuf>,
+    #[arg(
+        long = "domains",
+        alias = "domain",
+        value_enum,
+        value_delimiter = ',',
+        default_value = "all",
+        help_heading = "Optional options",
+        help = "Domain(s) to operate on (messaging, events, secrets, oauth, all); defaults to auto-detect from the bundle."
+    )]
+    domain: DemoSetupDomainArg,
+    #[arg(
+        long,
+        help_heading = "Main options",
+        help = "JSON/YAML file describing provider setup inputs."
+    )]
+    setup_input: Option<PathBuf>,
+    #[arg(
+        long,
+        help_heading = "Main options",
+        help = "Optional override for the public base URL injected into every setup input."
+    )]
+    public_base_url: Option<String>,
     #[arg(
         long,
         help_heading = "Optional options",
@@ -249,6 +270,13 @@ struct DemoUpArgs {
     nats_url: Option<String>,
     #[arg(
         long,
+        default_value = "demo",
+        help_heading = "Optional options",
+        help = "Environment used for secrets lookups."
+    )]
+    env: String,
+    #[arg(
+        long,
         help_heading = "Optional options",
         help = "Path to a prebuilt config file to use instead of auto-discovery."
     )]
@@ -279,6 +307,49 @@ struct DemoUpArgs {
     restart: Vec<RestartTarget>,
     #[arg(
         long,
+        value_delimiter = ',',
+        help_heading = "Optional options",
+        help = "CSV list of provider pack IDs to restrict setup to."
+    )]
+    providers: Vec<String>,
+    #[arg(
+        long,
+        help_heading = "Optional options",
+        help = "Avoid running provider setup flows."
+    )]
+    skip_setup: bool,
+    #[arg(
+        long,
+        help_heading = "Optional options",
+        help = "Skip greentic-secrets init during setup."
+    )]
+    skip_secrets_init: bool,
+    #[arg(
+        long,
+        help_heading = "Optional options",
+        help = "Run webhook verification flows after setup completes."
+    )]
+    verify_webhooks: bool,
+    #[arg(
+        long,
+        help_heading = "Optional options",
+        help = "Force re-run of setup flows even if records already exist."
+    )]
+    force_setup: bool,
+    #[arg(
+        long,
+        help_heading = "Optional options",
+        help = "Allow stored-vs-resolved contract hash changes when writing provider config."
+    )]
+    allow_contract_change: bool,
+    #[arg(
+        long,
+        help_heading = "Optional options",
+        help = "Write a single .bak backup before replacing provider config envelopes."
+    )]
+    backup: bool,
+    #[arg(
+        long,
         help_heading = "Optional options",
         help = "Path to a greentic-runner binary override."
     )]
@@ -304,40 +375,6 @@ struct DemoUpArgs {
         conflicts_with = "verbose"
     )]
     quiet: bool,
-}
-
-#[derive(Parser)]
-#[command(
-    about = "Stop demo services from a bundle.",
-    long_about = "Stops demo lifecycle services using greentic-start library orchestration."
-)]
-struct DemoStopArgs {
-    #[arg(
-        long,
-        help_heading = "Main options",
-        help = "Path to the bundle directory to run in bundle mode."
-    )]
-    bundle: Option<PathBuf>,
-    #[arg(
-        long,
-        help_heading = "Optional options",
-        help = "Override the state directory instead of deriving it from the bundle."
-    )]
-    state_dir: Option<PathBuf>,
-    #[arg(
-        long,
-        default_value = DEMO_DEFAULT_TENANT,
-        help_heading = "Optional options",
-        help = "Tenant to target when stopping demo services."
-    )]
-    tenant: String,
-    #[arg(
-        long,
-        default_value = DEMO_DEFAULT_TEAM,
-        help_heading = "Optional options",
-        help = "Team to target when stopping demo services."
-    )]
-    team: String,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -384,6 +421,16 @@ impl DemoSetupDomainArg {
                 }
                 enabled
             }
+        }
+    }
+}
+
+impl From<NatsModeArg> for demo::NatsMode {
+    fn from(value: NatsModeArg) -> Self {
+        match value {
+            NatsModeArg::Off => demo::NatsMode::Off,
+            NatsModeArg::On => demo::NatsMode::On,
+            NatsModeArg::External => demo::NatsMode::External,
         }
     }
 }
@@ -1811,8 +1858,6 @@ impl DemoCommand {
             DemoSubcommand::Build(args) => args.run(ctx),
             DemoSubcommand::Up(args) => args.run_start(ctx),
             DemoSubcommand::Start(args) => args.run_start(ctx),
-            DemoSubcommand::Restart(args) => args.run_restart(ctx),
-            DemoSubcommand::Stop(args) => args.run(),
             DemoSubcommand::Setup(args) => args.run(),
             DemoSubcommand::Send(args) => args.run(),
             DemoSubcommand::Ingress(args) => args.run(),
@@ -1881,58 +1926,734 @@ impl DemoBuildArgs {
 
 impl DemoUpArgs {
     fn run_start(self, _ctx: &AppCtx) -> anyhow::Result<()> {
-        run_start_request(self.to_start_request())
+        self.run_with_shutdown()
     }
 
-    fn run_restart(self, _ctx: &AppCtx) -> anyhow::Result<()> {
-        run_restart_request(self.to_start_request())
-    }
+    fn run_with_shutdown(self) -> anyhow::Result<()> {
+        let restart: std::collections::BTreeSet<String> =
+            self.restart.iter().map(restart_name).collect();
+        let log_level = if self.quiet {
+            operator_log::Level::Warn
+        } else if self.verbose {
+            operator_log::Level::Debug
+        } else {
+            operator_log::Level::Info
+        };
+        let command_label = "demo start";
+        let debug_enabled = self.verbose;
+        if let Some(bundle) = self.bundle.clone() {
+            // Resolve remote bundle references (https://) to local directory.
+            let bundle = resolve_bundle_source(&bundle)?;
+            let state_dir = bundle.join("state");
+            std::fs::create_dir_all(&state_dir)?;
+            let log_dir = self.log_dir.clone().unwrap_or_else(|| bundle.join("logs"));
+            let log_dir = operator_log::init(log_dir.clone(), log_level)?;
+            let run_targets =
+                select_bundle_run_targets(&bundle, self.tenant.as_deref(), self.team.as_deref())?;
+            let target_summary = format_bundle_targets(&run_targets);
+            operator_log::info(
+                module_path!(),
+                format!(
+                    "{command_label} (bundle={} targets=[{}]) log_dir={}",
+                    bundle.display(),
+                    &target_summary,
+                    log_dir.display()
+                ),
+            );
+            let mut nats_mode_arg = self.nats;
+            if self.no_nats {
+                nats_mode_arg = NatsModeArg::External;
+            }
+            let nats_mode = demo::NatsMode::from(nats_mode_arg);
+            if matches!(nats_mode, demo::NatsMode::On) {
+                eprintln!(
+                    "{}",
+                    operator_i18n::tr(
+                        "cli.start.warn_legacy_nats",
+                        "Warning: '--nats=on' uses the legacy GSM NATS stack; switch to embedded mode when possible."
+                    )
+                );
+            }
+            if demo_debug_enabled() {
+                println!(
+                    "[demo] start bundle={} tenant={:?} team={:?} nats_mode={:?} nats_url={:?} cloudflared={:?}",
+                    bundle.display(),
+                    self.tenant,
+                    self.team,
+                    nats_mode,
+                    self.nats_url,
+                    self.cloudflared
+                );
+            }
+            let tenant = self
+                .tenant
+                .clone()
+                .unwrap_or_else(|| DEMO_DEFAULT_TENANT.to_string());
+            let config = config::load_operator_config(&bundle)?;
+            domains::ensure_cbor_packs(&bundle)?;
+            let discovery = discovery::discover_with_options(
+                &bundle,
+                discovery::DiscoveryOptions { cbor_only: true },
+            )?;
+            discovery::persist(&bundle, &tenant, &discovery)?;
+            operator_log::info(
+                module_path!(),
+                format!(
+                    "bundle discovery targets=[{}] messaging={} events={} oauth={} providers={}",
+                    &target_summary,
+                    discovery.domains.messaging,
+                    discovery.domains.events,
+                    discovery.domains.oauth,
+                    discovery.providers.len()
+                ),
+            );
+            let demo_config_path = bundle.join("greentic.demo.yaml");
+            let demo_config = load_demo_config_or_default(&demo_config_path);
+            let services = config
+                .as_ref()
+                .and_then(|config| config.services.clone())
+                .unwrap_or_default();
+            let messaging_enabled = services
+                .messaging
+                .enabled
+                .is_enabled(discovery.domains.messaging);
+            let explicit_nats_url = self.nats_url.clone();
+            let domains_to_setup = self.domain.resolve_domains(Some(&discovery));
+            let tenant_ref = self
+                .tenant
+                .clone()
+                .unwrap_or_else(|| DEMO_DEFAULT_TENANT.to_string());
+            let team_ref = self.team.clone();
+            let capability_secrets_handle =
+                secrets_gate::resolve_secrets_manager(&bundle, &tenant_ref, team_ref.as_deref())?;
+            let capability_runner = DemoRunnerHost::new(
+                bundle.clone(),
+                &discovery,
+                self.runner_binary.clone(),
+                capability_secrets_handle.clone(),
+                debug_enabled,
+            )?;
+            crate::capability_bootstrap::log_capability_bootstrap_report(
+                &capability_runner,
+                &OperatorContext {
+                    tenant: tenant_ref.clone(),
+                    team: team_ref.clone(),
+                    correlation_id: None,
+                },
+                &domains_to_setup,
+            );
 
-    fn to_start_request(&self) -> StartRequest {
-        StartRequest {
-            bundle: self.bundle.as_ref().map(|path| path.display().to_string()),
-            tenant: self.tenant.clone(),
-            team: self.team.clone(),
-            no_nats: self.no_nats,
-            nats: match self.nats {
-                NatsModeArg::Off => StartNatsModeArg::Off,
-                NatsModeArg::On => StartNatsModeArg::On,
-                NatsModeArg::External => StartNatsModeArg::External,
-            },
-            nats_url: self.nats_url.clone(),
-            config: self.config.clone(),
-            cloudflared: match self.cloudflared {
-                CloudflaredModeArg::On => StartCloudflaredModeArg::On,
-                CloudflaredModeArg::Off => StartCloudflaredModeArg::Off,
-            },
-            cloudflared_binary: self.cloudflared_binary.clone(),
-            ngrok: match self.ngrok {
-                NgrokModeArg::On => StartNgrokModeArg::On,
-                NgrokModeArg::Off => StartNgrokModeArg::Off,
-            },
-            ngrok_binary: self.ngrok_binary.clone(),
-            runner_binary: self.runner_binary.clone(),
-            restart: self.restart.iter().map(map_restart_target).collect(),
-            log_dir: self.log_dir.clone(),
-            verbose: self.verbose,
-            quiet: self.quiet,
+            // --- Telemetry capability bootstrap ---
+            let telemetry_answers = self
+                .setup_input
+                .as_ref()
+                .and_then(|path| load_setup_input(path).ok())
+                .and_then(|raw| extract_telemetry_setup_answers(&raw));
+            match crate::capability_bootstrap::try_upgrade_telemetry(
+                &bundle,
+                &capability_runner,
+                &tenant_ref,
+                team_ref.as_deref(),
+                None,
+                telemetry_answers.as_ref(),
+            ) {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!("no telemetry capability — using default tracing");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "telemetry capability bootstrap failed — using default tracing");
+                }
+            }
+
+            // --- State store capability bootstrap (in-memory → Redis) ---
+            let state_redis_answers = self
+                .setup_input
+                .as_ref()
+                .and_then(|path| load_setup_input(path).ok())
+                .and_then(|raw| extract_state_redis_setup_answers(&raw));
+            let upgraded_state_store =
+                match crate::capability_bootstrap::try_upgrade_state_store(
+                    &bundle,
+                    &capability_runner,
+                    &capability_secrets_handle,
+                    &tenant_ref,
+                    team_ref.as_deref(),
+                    None,
+                    state_redis_answers.as_ref(),
+                ) {
+                    Ok(store) => store,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "state store capability bootstrap failed — using in-memory");
+                        None
+                    }
+                };
+
+            let mut cloudflared_config = match self.cloudflared {
+                CloudflaredModeArg::Off => None,
+                CloudflaredModeArg::On => {
+                    let explicit = self.cloudflared_binary.clone();
+                    let binary = bin_resolver::resolve_binary(
+                        "cloudflared",
+                        &ResolveCtx {
+                            config_dir: bundle.clone(),
+                            explicit_path: explicit,
+                        },
+                    )?;
+                    Some(crate::cloudflared::CloudflaredConfig {
+                        binary,
+                        local_port: 8080,
+                        extra_args: Vec::new(),
+                        restart: restart.contains("cloudflared"),
+                    })
+                }
+            };
+
+            let mut ngrok_config = match self.ngrok {
+                NgrokModeArg::Off => None,
+                NgrokModeArg::On => {
+                    let explicit = self.ngrok_binary.clone();
+                    let binary = bin_resolver::resolve_binary(
+                        "ngrok",
+                        &ResolveCtx {
+                            config_dir: bundle.clone(),
+                            explicit_path: explicit,
+                        },
+                    )?;
+                    Some(crate::ngrok::NgrokConfig {
+                        binary,
+                        local_port: 8080,
+                        extra_args: Vec::new(),
+                        restart: restart.contains("ngrok"),
+                    })
+                }
+            };
+
+            let mut public_base_url = self.public_base_url.clone();
+            let team_id = self
+                .team
+                .clone()
+                .unwrap_or_else(|| DEMO_DEFAULT_TEAM.to_string());
+            let mut started_tunnel_early = false;
+            if public_base_url.is_none()
+                && self.setup_input.is_some()
+                && let Some(cfg) = cloudflared_config.as_mut()
+            {
+                let paths = RuntimePaths::new(&state_dir, &tenant, &team_id);
+                let setup_log = operator_log::reserve_service_log(&log_dir, "cloudflared")
+                    .with_context(|| "unable to open cloudflared.log")?;
+                operator_log::info(
+                    module_path!(),
+                    format!(
+                        "starting setup-mode cloudflared log={}",
+                        setup_log.display()
+                    ),
+                );
+                let handle = crate::cloudflared::start_quick_tunnel(&paths, cfg, &setup_log)?;
+                operator_log::info(
+                    module_path!(),
+                    format!(
+                        "cloudflared setup mode ready url={} log={}",
+                        handle.url,
+                        setup_log.display()
+                    ),
+                );
+                let domain_labels = domains_to_setup
+                    .iter()
+                    .map(|domain| domains::domain_name(*domain))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                println!(
+                    "{}",
+                    operator_i18n::trf(
+                        "cli.start.public_url_setup_domains",
+                        "Public URL (cloudflared setup domains={}): {}",
+                        &[&domain_labels, &handle.url]
+                    )
+                );
+                public_base_url = Some(handle.url.clone());
+                started_tunnel_early = true;
+            }
+
+            if public_base_url.is_none()
+                && self.setup_input.is_some()
+                && let Some(cfg) = ngrok_config.as_mut()
+            {
+                let paths = RuntimePaths::new(&state_dir, &tenant, &team_id);
+                let setup_log = operator_log::reserve_service_log(&log_dir, "ngrok")
+                    .with_context(|| "unable to open ngrok.log")?;
+                operator_log::info(
+                    module_path!(),
+                    format!("starting setup-mode ngrok log={}", setup_log.display()),
+                );
+                let handle = crate::ngrok::start_tunnel(&paths, cfg, &setup_log)?;
+                operator_log::info(
+                    module_path!(),
+                    format!(
+                        "ngrok setup mode ready url={} log={}",
+                        handle.url,
+                        setup_log.display()
+                    ),
+                );
+                let domain_labels = domains_to_setup
+                    .iter()
+                    .map(|domain| domains::domain_name(*domain))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                println!(
+                    "{}",
+                    operator_i18n::trf(
+                        "cli.start.public_url_setup_domains",
+                        "Public URL (ngrok setup domains={}): {}",
+                        &[&domain_labels, &handle.url]
+                    )
+                );
+                public_base_url = Some(handle.url.clone());
+                started_tunnel_early = true;
+            }
+
+            if started_tunnel_early && let Some(cfg) = cloudflared_config.as_mut() {
+                cfg.restart = false;
+            }
+            if started_tunnel_early && let Some(cfg) = ngrok_config.as_mut() {
+                cfg.restart = false;
+            }
+
+            if let Some(setup_input) = self.setup_input.as_ref() {
+                let tenant_ref = self.tenant.as_deref().unwrap_or(DEMO_DEFAULT_TENANT);
+                let secrets_handle = secrets_gate::resolve_secrets_manager(
+                    &bundle,
+                    tenant_ref,
+                    self.team.as_deref(),
+                )?;
+                run_demo_up_setup(
+                    &bundle,
+                    &domains_to_setup,
+                    setup_input,
+                    self.tenant.clone(),
+                    self.team.clone(),
+                    &self.env,
+                    self.runner_binary.clone(),
+                    public_base_url.clone(),
+                    Some(secrets_handle.manager()),
+                )?;
+            }
+
+            let start_result = {
+                let mut started = 0;
+                let guard = (|| -> anyhow::Result<()> {
+                    for target in &run_targets {
+                        demo::demo_up(
+                            &bundle,
+                            &target.tenant,
+                            target.team.as_deref(),
+                            explicit_nats_url.as_deref(),
+                            nats_mode,
+                            messaging_enabled,
+                            cloudflared_config.clone(),
+                            ngrok_config.clone(),
+                            &log_dir,
+                            debug_enabled,
+                        )
+                        .with_context(|| {
+                            format!("target tenant={} team={}", target.tenant, target.team_id())
+                        })?;
+                        started += 1;
+                    }
+                    Ok(())
+                })();
+                if guard.is_err() {
+                    for target in &run_targets[..started] {
+                        if let Err(cleanup_err) = demo::demo_down_runtime(
+                            &state_dir,
+                            &target.tenant,
+                            target.team_id(),
+                            false,
+                        ) {
+                            eprintln!(
+                                "{}",
+                                operator_i18n::trf(
+                                    "cli.start.warn_failed_stop_earlier_target",
+                                    "Warning: failed to stop earlier target tenant={} team={} : {}",
+                                    &[&target.tenant, target.team_id(), &cleanup_err.to_string()]
+                                )
+                            );
+                        }
+                    }
+                }
+                guard
+            };
+            let mut ingress_server = None;
+            let mut timer_scheduler = None;
+            if start_result.is_ok() {
+                let ingress_secrets_handle =
+                    secrets_gate::resolve_secrets_manager(&bundle, &tenant, self.team.as_deref())?;
+                let admin_ctx = Some(crate::demo::http_ingress::AdminContext {
+                    tenant: tenant.clone(),
+                    team: self.team.clone(),
+                    env: resolve_env(None),
+                });
+                match start_demo_ingress_server(
+                    &bundle,
+                    &discovery,
+                    &demo_config,
+                    &domains_to_setup,
+                    self.runner_binary.clone(),
+                    debug_enabled,
+                    ingress_secrets_handle.clone(),
+                    upgraded_state_store.clone(),
+                    admin_ctx,
+                ) {
+                    Ok(server) => {
+                        println!(
+                            "{}",
+                            operator_i18n::trf(
+                                "cli.start.http_ingress_ready",
+                                "HTTP ingress ready at http://{}:{}",
+                                &[
+                                    &demo_config.services.gateway.listen_addr,
+                                    &demo_config.services.gateway.port.to_string()
+                                ]
+                            )
+                        );
+                        ingress_server = Some(server);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "{}",
+                            operator_i18n::trf(
+                                "cli.start.warn_http_ingress_disabled",
+                                "Warning: HTTP ingress disabled: {}",
+                                &[&err.to_string()]
+                            )
+                        );
+                        operator_log::warn(
+                            module_path!(),
+                            format!("demo ingress server unavailable: {err}"),
+                        );
+                    }
+                }
+                match start_demo_timer_scheduler(
+                    &bundle,
+                    &discovery,
+                    &domains_to_setup,
+                    self.runner_binary.clone(),
+                    debug_enabled,
+                    ingress_secrets_handle.clone(),
+                    &tenant,
+                    self.team.as_deref().unwrap_or(DEMO_DEFAULT_TEAM),
+                ) {
+                    Ok(Some(scheduler)) => {
+                        println!(
+                            "{}",
+                            operator_i18n::tr(
+                                "cli.start.events_timer_scheduler_ready",
+                                "events timer scheduler ready"
+                            )
+                        );
+                        timer_scheduler = Some(scheduler);
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        eprintln!(
+                            "{}",
+                            operator_i18n::trf(
+                                "cli.start.warn_events_timer_scheduler_disabled",
+                                "Warning: events timer scheduler disabled: {}",
+                                &[&err.to_string()]
+                            )
+                        );
+                        operator_log::warn(
+                            module_path!(),
+                            format!("demo timer scheduler unavailable: {err}"),
+                        );
+                    }
+                }
+            }
+            if let Err(ref err) = start_result {
+                operator_log::error(
+                    module_path!(),
+                    format!(
+                        "{command_label} bundle {} failed for targets=[{}]: {err}",
+                        bundle.display(),
+                        &target_summary
+                    ),
+                );
+            } else {
+                operator_log::info(
+                    module_path!(),
+                    format!(
+                        "{command_label} bundle {} completed for targets=[{}]",
+                        bundle.display(),
+                        &target_summary
+                    ),
+                );
+            }
+            if start_result.is_ok() {
+                println!(
+                    "{command_label} running (bundle={} targets=[{}]); press Ctrl+C to stop",
+                    bundle.display(),
+                    &target_summary
+                );
+                wait_for_ctrlc()?;
+                if let Some(server) = ingress_server.take() {
+                    server.stop()?;
+                }
+                if let Some(scheduler) = timer_scheduler.take() {
+                    scheduler.stop()?;
+                }
+                for target in run_targets.iter().rev() {
+                    demo::demo_down_runtime(&state_dir, &target.tenant, target.team_id(), false)?;
+                }
+            }
+            return start_result;
         }
-    }
-}
 
-impl DemoStopArgs {
-    fn run(self) -> anyhow::Result<()> {
-        run_stop_request(StopRequest {
-            bundle: self.bundle.map(|path| path.display().to_string()),
-            state_dir: self.state_dir,
-            tenant: self.tenant,
-            team: self.team,
-        })
+        let config_path = resolve_demo_config_path(self.config.clone())?;
+        let config_dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let state_dir = config_dir.join("state");
+        let initial_log_dir = self
+            .log_dir
+            .clone()
+            .unwrap_or_else(|| config_dir.join("logs"));
+        let log_dir = operator_log::init(initial_log_dir.clone(), log_level)?;
+        operator_log::info(
+            module_path!(),
+            format!(
+                "{command_label} (config={}) tenant={:?} team={:?} log_dir={}",
+                config_path.display(),
+                self.tenant,
+                self.team,
+                log_dir.display()
+            ),
+        );
+        let demo_config = config::load_demo_config(&config_path)?;
+        let tenant = demo_config.tenant.clone();
+        let team = demo_config.team.clone();
+        let cloudflared = match self.cloudflared {
+            CloudflaredModeArg::Off => None,
+            CloudflaredModeArg::On => {
+                let explicit = self.cloudflared_binary.clone();
+                let binary = bin_resolver::resolve_binary(
+                    "cloudflared",
+                    &ResolveCtx {
+                        config_dir: config_dir.clone(),
+                        explicit_path: explicit,
+                    },
+                )?;
+                Some(crate::cloudflared::CloudflaredConfig {
+                    binary,
+                    local_port: demo_config.services.gateway.port,
+                    extra_args: Vec::new(),
+                    restart: restart.contains("cloudflared"),
+                })
+            }
+        };
+        let ngrok = match self.ngrok {
+            NgrokModeArg::Off => None,
+            NgrokModeArg::On => {
+                let explicit = self.ngrok_binary.clone();
+                let binary = bin_resolver::resolve_binary(
+                    "ngrok",
+                    &ResolveCtx {
+                        config_dir: config_dir.clone(),
+                        explicit_path: explicit,
+                    },
+                )?;
+                Some(crate::ngrok::NgrokConfig {
+                    binary,
+                    local_port: demo_config.services.gateway.port,
+                    extra_args: Vec::new(),
+                    restart: restart.contains("ngrok"),
+                })
+            }
+        };
+
+        let provider_setup_input = self.setup_input.clone();
+        let timer_runner_binary = self.runner_binary.clone();
+        let provider_options = crate::providers::ProviderSetupOptions {
+            providers: if self.providers.is_empty() {
+                None
+            } else {
+                Some(self.providers)
+            },
+            verify_webhooks: self.verify_webhooks,
+            force_setup: self.force_setup,
+            skip_setup: self.skip_setup,
+            skip_secrets_init: self.skip_secrets_init,
+            allow_contract_change: self.allow_contract_change,
+            backup: self.backup,
+            setup_input: provider_setup_input.clone(),
+            runner_binary: self.runner_binary,
+            continue_on_error: provider_setup_input.is_none(),
+        };
+
+        let result = demo::demo_up_services(
+            &config_path,
+            &demo_config,
+            cloudflared,
+            ngrok,
+            &restart,
+            provider_options,
+            &log_dir,
+            debug_enabled,
+        );
+        if let Err(ref err) = result {
+            operator_log::error(
+                module_path!(),
+                format!("{command_label} services failed: {err}"),
+            );
+        } else {
+            operator_log::info(module_path!(), "{command_label} services completed");
+        }
+        if result.is_ok() {
+            let is_demo_bundle = config_dir.join("greentic.demo.yaml").exists();
+            let discovery = discovery::discover_with_options(
+                &config_dir,
+                discovery::DiscoveryOptions {
+                    cbor_only: is_demo_bundle,
+                },
+            )?;
+            let domains = if discovery.domains.events {
+                vec![Domain::Events]
+            } else {
+                Vec::new()
+            };
+            let timer_secrets_handle =
+                secrets_gate::resolve_secrets_manager(&config_dir, &tenant, Some(&team))?;
+            let timer_scheduler = start_demo_timer_scheduler(
+                &config_dir,
+                &discovery,
+                &domains,
+                timer_runner_binary.clone(),
+                debug_enabled,
+                timer_secrets_handle,
+                &tenant,
+                &team,
+            )?;
+            println!(
+                "{command_label} running (config={} tenant={} team={}); press Ctrl+C to stop",
+                config_path.display(),
+                tenant,
+                team
+            );
+            wait_for_ctrlc()?;
+            if let Some(scheduler) = timer_scheduler {
+                scheduler.stop()?;
+            }
+            demo::demo_down_runtime(&state_dir, &tenant, &team, false)?;
+        }
+        result
     }
 }
 
 const DEMO_DEFAULT_TENANT: &str = "demo";
 const DEMO_DEFAULT_TEAM: &str = "default";
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct DemoBundleTarget {
+    tenant: String,
+    team: Option<String>,
+}
+
+impl DemoBundleTarget {
+    fn label(&self) -> String {
+        match &self.team {
+            Some(team) if !team.is_empty() => format!("{}.{}", self.tenant, team),
+            _ => self.tenant.clone(),
+        }
+    }
+
+    fn matches_filters(&self, tenant_filter: Option<&str>, team_filter: Option<&str>) -> bool {
+        if let Some(filter) = tenant_filter
+            && filter != self.tenant
+        {
+            return false;
+        }
+        if let Some(filter) = team_filter
+            && filter != self.team_id()
+        {
+            return false;
+        }
+        true
+    }
+
+    fn team_id(&self) -> &str {
+        self.team.as_deref().unwrap_or(DEMO_DEFAULT_TEAM)
+    }
+}
+
+fn format_bundle_targets(targets: &[DemoBundleTarget]) -> String {
+    targets
+        .iter()
+        .map(|target| target.label())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn select_bundle_run_targets(
+    bundle: &Path,
+    tenant_filter: Option<&str>,
+    team_filter: Option<&str>,
+) -> anyhow::Result<Vec<DemoBundleTarget>> {
+    let resolved_targets = discover_bundle_run_targets(bundle)?;
+    let filtered = resolved_targets
+        .iter()
+        .filter(|target| target.matches_filters(tenant_filter, team_filter))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !filtered.is_empty() {
+        return Ok(filtered);
+    }
+    if resolved_targets.is_empty() {
+        let tenant = tenant_filter.unwrap_or(DEMO_DEFAULT_TENANT).to_string();
+        let team = team_filter.map(|value| value.to_string());
+        return Ok(vec![DemoBundleTarget { tenant, team }]);
+    }
+    anyhow::bail!(
+        "no resolved targets matched tenant={:?} team={:?}",
+        tenant_filter,
+        team_filter
+    );
+}
+
+fn discover_bundle_run_targets(bundle: &Path) -> anyhow::Result<Vec<DemoBundleTarget>> {
+    let resolved_dir = bundle.join("state").join("resolved");
+    if !resolved_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut seen = BTreeSet::new();
+    for entry in fs::read_dir(resolved_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if let Some(ext) = path.extension().and_then(|value| value.to_str()) {
+            let ext = ext.to_ascii_lowercase();
+            if ext != "yaml" && ext != "yml" {
+                continue;
+            }
+        } else {
+            continue;
+        }
+        let stem = match path.file_stem().and_then(|value| value.to_str()) {
+            Some(value) if !value.is_empty() => value,
+            _ => continue,
+        };
+        let mut parts = stem.splitn(2, '.');
+        let tenant = match parts.next() {
+            Some(value) if !value.is_empty() => value.to_string(),
+            _ => continue,
+        };
+        let team = parts
+            .next()
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+        seen.insert(DemoBundleTarget { tenant, team });
+    }
+    Ok(seen.into_iter().collect())
+}
 
 impl DemoSetupArgs {
     fn run(self) -> anyhow::Result<()> {
@@ -2027,6 +2748,7 @@ impl DemoSetupArgs {
         Ok(())
     }
 }
+
 
 impl DemoPolicyArgs {
     fn run(self, policy: Policy) -> anyhow::Result<()> {
@@ -4872,6 +5594,210 @@ fn create_demo_bundle_structure(root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn load_demo_config_or_default(path: &Path) -> config::DemoConfig {
+    match config::load_demo_config(path) {
+        Ok(value) => value,
+        Err(err) => {
+            operator_log::warn(
+                module_path!(),
+                format!(
+                    "failed to load {}: {err}; using default values",
+                    path.display()
+                ),
+            );
+            config::DemoConfig::default()
+        }
+    }
+}
+
+fn start_demo_ingress_server(
+    bundle: &Path,
+    discovery: &discovery::DiscoveryResult,
+    demo_config: &config::DemoConfig,
+    domains: &[Domain],
+    runner_binary: Option<PathBuf>,
+    debug_enabled: bool,
+    secrets_handle: SecretsManagerHandle,
+    state_store_override: Option<greentic_runner_host::storage::DynStateStore>,
+    admin_context: Option<crate::demo::http_ingress::AdminContext>,
+) -> anyhow::Result<HttpIngressServer> {
+    let addr = format!(
+        "{}:{}",
+        demo_config.services.gateway.listen_addr, demo_config.services.gateway.port
+    );
+    let bind_addr: SocketAddr = addr
+        .parse()
+        .with_context(|| format!("invalid gateway listen address {addr}"))?;
+    let mut host = DemoRunnerHost::new(
+        bundle.to_path_buf(),
+        discovery,
+        runner_binary,
+        secrets_handle.clone(),
+        debug_enabled,
+    )?;
+    if let Some(store) = state_store_override {
+        host.set_state_store(store);
+    }
+    let runner_host = Arc::new(host);
+    // Extract webchat SPA GUI assets from messaging-webchat.gtpack if present.
+    // Use localhost instead of 0.0.0.0 so browser can reach the URL.
+    let host = if bind_addr.ip().is_unspecified() {
+        format!("localhost:{}", bind_addr.port())
+    } else {
+        bind_addr.to_string()
+    };
+    let base_url = format!("http://{}", host);
+    let webchat_spa_dir = extract_gui_from_gtpack(bundle, discovery, &base_url);
+    HttpIngressServer::start(HttpIngressConfig {
+        bind_addr,
+        domains: domains.to_vec(),
+        runner_host,
+        webchat_spa_dir,
+        admin_context,
+    })
+}
+
+/// Look for a messaging-webchat gtpack that contains a `gui/` directory and
+/// extract the GUI assets to `{bundle}/state/.gui-cache/webchat/`.
+fn extract_gui_from_gtpack(
+    bundle: &Path,
+    discovery: &discovery::DiscoveryResult,
+    base_url: &str,
+) -> Option<PathBuf> {
+    let webchat_pack = discovery
+        .providers
+        .iter()
+        .find(|p| p.domain == "messaging" && p.provider_id.contains("webchat"))?;
+    let pack_path = &webchat_pack.pack_path;
+    let archive = zip::ZipArchive::new(std::fs::File::open(pack_path).ok()?).ok()?;
+    let has_gui = archive.file_names().any(|name| name.starts_with("gui/"));
+    if !has_gui {
+        return None;
+    }
+    drop(archive);
+
+    let dest = bundle.join("state").join(".gui-cache").join("webchat");
+    // Re-extract every start (simple; avoids stale cache issues).
+    let _ = std::fs::remove_dir_all(&dest);
+    std::fs::create_dir_all(&dest).ok()?;
+
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(pack_path).ok()?).ok()?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).ok()?;
+        let name = entry.name().to_string();
+        if !name.starts_with("gui/") {
+            continue;
+        }
+        let rel = &name["gui/".len()..];
+        if rel.is_empty() || rel.contains("..") {
+            continue;
+        }
+        let out_path = dest.join(rel);
+        if name.ends_with('/') {
+            std::fs::create_dir_all(&out_path).ok()?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent).ok()?;
+            }
+            let mut out_file = std::fs::File::create(&out_path).ok()?;
+            std::io::copy(&mut entry, &mut out_file).ok()?;
+        }
+    }
+    // Patch skin.json files: rewrite directLine.tokenUrl and domain to absolute
+    // URLs so the Zod `.url()` validator in the SPA accepts them.
+    patch_skin_directline_urls(&dest, base_url);
+
+    operator_log::info(
+        module_path!(),
+        format!("webchat GUI extracted from {}", pack_path.display()),
+    );
+    Some(dest)
+}
+
+/// Rewrite `directLine.tokenUrl` and `directLine.domain` in every
+/// `skins/*/skin.json` to absolute URLs rooted at `base_url`.
+fn patch_skin_directline_urls(gui_dir: &Path, base_url: &str) {
+    let skins_dir = gui_dir.join("skins");
+    let entries = match std::fs::read_dir(&skins_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let skin_path = entry.path().join("skin.json");
+        if !skin_path.exists() {
+            continue;
+        }
+        let raw = match std::fs::read_to_string(&skin_path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let mut doc: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let changed = if let Some(dl) = doc.get_mut("directLine").and_then(|v| v.as_object_mut()) {
+            let mut c = false;
+            for key in &["tokenUrl", "domain"] {
+                if let Some(val) = dl.get_mut(*key).and_then(|v| v.as_str().map(String::from)) {
+                    if val.starts_with('/') {
+                        let abs = format!("{}{}", base_url.trim_end_matches('/'), val);
+                        dl.insert(key.to_string(), serde_json::Value::String(abs));
+                        c = true;
+                    }
+                }
+            }
+            c
+        } else {
+            false
+        };
+        if changed {
+            if let Ok(patched) = serde_json::to_string_pretty(&doc) {
+                let _ = std::fs::write(&skin_path, patched);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_demo_timer_scheduler(
+    bundle: &Path,
+    discovery: &discovery::DiscoveryResult,
+    domains: &[Domain],
+    runner_binary: Option<PathBuf>,
+    debug_enabled: bool,
+    secrets_handle: SecretsManagerHandle,
+    tenant: &str,
+    team: &str,
+) -> anyhow::Result<Option<TimerScheduler>> {
+    if !domains.contains(&Domain::Events) {
+        return Ok(None);
+    }
+    let default_interval_seconds = std::env::var("GREENTIC_OPERATOR_TIMER_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(60)
+        .max(1);
+    let handlers = discover_timer_handlers(discovery, default_interval_seconds)?;
+    if handlers.is_empty() {
+        return Ok(None);
+    }
+    let runner_host = Arc::new(DemoRunnerHost::new(
+        bundle.to_path_buf(),
+        discovery,
+        runner_binary,
+        secrets_handle,
+        debug_enabled,
+    )?);
+    let scheduler = TimerScheduler::start(TimerSchedulerConfig {
+        runner_host,
+        tenant: tenant.to_string(),
+        team: Some(team.to_string()),
+        handlers,
+        debug_enabled,
+    })?;
+    Ok(Some(scheduler))
+}
+
 fn ensure_dir(path: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(path)?;
     Ok(())
@@ -4887,16 +5813,44 @@ fn write_if_missing(path: &Path, contents: &str) -> anyhow::Result<()> {
     fs::write(path, contents)?;
     Ok(())
 }
-fn map_restart_target(target: &RestartTarget) -> StartRestartTarget {
+fn restart_name(target: &RestartTarget) -> String {
     match target {
-        RestartTarget::All => StartRestartTarget::All,
-        RestartTarget::Cloudflared => StartRestartTarget::Cloudflared,
-        RestartTarget::Ngrok => StartRestartTarget::Ngrok,
-        RestartTarget::Nats => StartRestartTarget::Nats,
-        RestartTarget::Gateway => StartRestartTarget::Gateway,
-        RestartTarget::Egress => StartRestartTarget::Egress,
-        RestartTarget::Subscriptions => StartRestartTarget::Subscriptions,
+        RestartTarget::All => "all",
+        RestartTarget::Cloudflared => "cloudflared",
+        RestartTarget::Ngrok => "ngrok",
+        RestartTarget::Nats => "nats",
+        RestartTarget::Gateway => "gateway",
+        RestartTarget::Egress => "egress",
+        RestartTarget::Subscriptions => "subscriptions",
     }
+    .to_string()
+}
+
+fn resolve_demo_config_path(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    let cwd = std::env::current_dir()?;
+    let demo_path = cwd.join("demo").join("demo.yaml");
+    if demo_path.exists() {
+        return Ok(demo_path);
+    }
+    let fallback = cwd.join("greentic.operator.yaml");
+    if fallback.exists() {
+        return Ok(fallback);
+    }
+    Err(anyhow::anyhow!(
+        "no demo config found; pass --config or create ./demo/demo.yaml"
+    ))
+}
+
+fn wait_for_ctrlc() -> anyhow::Result<()> {
+    let runtime = Runtime::new().context("failed to spawn runtime for Ctrl+C listener")?;
+    runtime.block_on(async {
+        tokio::signal::ctrl_c()
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to wait for Ctrl+C: {err}"))
+    })
 }
 
 impl DemoStatusArgs {
@@ -4966,6 +5920,114 @@ fn project_root(arg: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     Ok(arg.unwrap_or(env::current_dir()?))
 }
 
+/// Resolve a bundle path that may be:
+/// - A local directory path (returned as-is)
+/// - An `https://` or `http://` URL pointing to a `.tar.gz` or `.zip` archive
+///   (downloaded and extracted to a local cache directory)
+fn resolve_bundle_source(bundle: &PathBuf) -> anyhow::Result<PathBuf> {
+    let s = bundle.to_string_lossy();
+    if !s.starts_with("https://") && !s.starts_with("http://") {
+        // Local path – use as-is.
+        return Ok(bundle.clone());
+    }
+
+    // Determine cache directory: ~/.greentic/cache/bundles/<hash>/
+    let url = s.to_string();
+    let hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        url.hash(&mut h);
+        format!("{:016x}", h.finish())
+    };
+    let cache_base = directories_next::ProjectDirs::from("ai", "greentic", "greentic-operator")
+        .map(|dirs| dirs.cache_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".greentic").join("cache"));
+    let dest = cache_base.join("bundles").join(&hash);
+
+    // If already extracted, reuse.
+    if dest.join(".bundle_url").exists() {
+        eprintln!("[bundle] Menggunakan cache bundle dari {url}");
+        return Ok(dest);
+    }
+
+    eprintln!("[bundle] Mengunduh bundle dari {url} ...");
+    let tmp_archive = dest.parent().unwrap().join(format!("{hash}.download"));
+    std::fs::create_dir_all(dest.parent().unwrap())?;
+
+    // Download with curl.
+    let output = std::process::Command::new("curl")
+        .args(["-fSL", "--max-time", "120", "-o"])
+        .arg(&tmp_archive)
+        .arg(&url)
+        .output()
+        .with_context(|| format!("download bundle from {url}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = std::fs::remove_file(&tmp_archive);
+        return Err(anyhow!("gagal mengunduh bundle {url}: {stderr}"));
+    }
+
+    // Detect format and extract.
+    std::fs::create_dir_all(&dest)?;
+    let is_zip = url.ends_with(".zip")
+        || url.ends_with(".gtbundle")
+        || {
+            // Check magic bytes: PK\x03\x04
+            std::fs::read(&tmp_archive)
+                .map(|b| b.len() >= 4 && b[0] == 0x50 && b[1] == 0x4B && b[2] == 0x03 && b[3] == 0x04)
+                .unwrap_or(false)
+        };
+
+    if is_zip {
+        let file = std::fs::File::open(&tmp_archive)
+            .with_context(|| format!("open downloaded archive {}", tmp_archive.display()))?;
+        let mut archive = zip::ZipArchive::new(file)
+            .with_context(|| "parse downloaded zip archive")?;
+        archive.extract(&dest)
+            .with_context(|| format!("extract zip to {}", dest.display()))?;
+    } else {
+        // Assume tar.gz
+        let status = std::process::Command::new("tar")
+            .args(["xzf"])
+            .arg(&tmp_archive)
+            .arg("-C")
+            .arg(&dest)
+            .status()
+            .with_context(|| "extract tar.gz bundle")?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&dest);
+            let _ = std::fs::remove_file(&tmp_archive);
+            return Err(anyhow!("gagal mengekstrak bundle archive"));
+        }
+    }
+
+    // If the archive extracted into a single subdirectory, flatten it.
+    let entries: Vec<_> = std::fs::read_dir(&dest)?
+        .filter_map(|e| e.ok())
+        .collect();
+    if entries.len() == 1 && entries[0].file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        let inner = entries[0].path();
+        // Check if it looks like a bundle (has packs/ or providers/ or gmap.yaml).
+        let looks_like_bundle = inner.join("packs").exists()
+            || inner.join("providers").exists()
+            || inner.join("gmap.yaml").exists();
+        if looks_like_bundle {
+            let tmp_inner = dest.parent().unwrap().join(format!("{hash}.inner"));
+            std::fs::rename(&inner, &tmp_inner)?;
+            std::fs::remove_dir_all(&dest)?;
+            std::fs::rename(&tmp_inner, &dest)?;
+        }
+    }
+
+    // Write marker file.
+    std::fs::write(dest.join(".bundle_url"), &url)?;
+    let _ = std::fs::remove_file(&tmp_archive);
+
+    eprintln!("[bundle] Bundle diekstrak ke {}", dest.display());
+    Ok(dest)
+}
+
 fn resolve_state_dir(state_dir: Option<PathBuf>, bundle: Option<&PathBuf>) -> PathBuf {
     if let Some(state_dir) = state_dir {
         return state_dir;
@@ -5013,6 +6075,169 @@ fn demo_debug_enabled() -> bool {
         std::env::var("GREENTIC_OPERATOR_DEMO_DEBUG").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
     )
+}
+
+/// Extract telemetry setup answers from a setup-input file.
+///
+/// Supports multiple file formats:
+/// - Flat: `{ "telemetry-otlp": { "preset": "azure", ... } }` (setup-input style)
+/// - Wizard: `{ "wizard_answers": { "setup_answers": { "telemetry-otlp": { ... } } } }`
+/// - Direct: `{ "preset": "azure", ... }` (single-provider file)
+fn extract_telemetry_setup_answers(raw: &serde_json::Value) -> Option<serde_json::Value> {
+    const TELEMETRY_PACK_ID: &str = "telemetry-otlp";
+
+    let map = raw.as_object()?;
+
+    // 1. Direct key: { "telemetry-otlp": { ... } }
+    if let Some(answers) = map.get(TELEMETRY_PACK_ID) {
+        if answers.as_object().is_some_and(|m| !m.is_empty()) {
+            return Some(answers.clone());
+        }
+    }
+
+    // 2. Wizard answers format: { "wizard_answers": { "setup_answers": { "telemetry-otlp": { ... } } } }
+    if let Some(wizard) = map.get("wizard_answers").and_then(|v| v.as_object()) {
+        if let Some(setup) = wizard.get("setup_answers").and_then(|v| v.as_object()) {
+            if let Some(answers) = setup.get(TELEMETRY_PACK_ID) {
+                if answers.as_object().is_some_and(|m| !m.is_empty()) {
+                    return Some(answers.clone());
+                }
+            }
+        }
+    }
+
+    // 3. setup_answers at top level: { "setup_answers": { "telemetry-otlp": { ... } } }
+    if let Some(setup) = map.get("setup_answers").and_then(|v| v.as_object()) {
+        if let Some(answers) = setup.get(TELEMETRY_PACK_ID) {
+            if answers.as_object().is_some_and(|m| !m.is_empty()) {
+                return Some(answers.clone());
+            }
+        }
+    }
+
+    // 4. Direct config: { "preset": "azure", "otlp_endpoint": "...", ... }
+    if map.contains_key("preset") || map.contains_key("otlp_endpoint") {
+        return Some(raw.clone());
+    }
+
+    None
+}
+
+fn extract_state_redis_setup_answers(raw: &serde_json::Value) -> Option<serde_json::Value> {
+    const STATE_REDIS_PACK_ID: &str = "state-redis";
+
+    let map = raw.as_object()?;
+
+    // 1. Direct key: { "state-redis": { ... } }
+    if let Some(answers) = map.get(STATE_REDIS_PACK_ID) {
+        if answers.as_object().is_some_and(|m| !m.is_empty()) {
+            return Some(answers.clone());
+        }
+    }
+
+    // 2. Wizard answers format: { "wizard_answers": { "setup_answers": { "state-redis": { ... } } } }
+    if let Some(wizard) = map.get("wizard_answers").and_then(|v| v.as_object()) {
+        if let Some(setup) = wizard.get("setup_answers").and_then(|v| v.as_object()) {
+            if let Some(answers) = setup.get(STATE_REDIS_PACK_ID) {
+                if answers.as_object().is_some_and(|m| !m.is_empty()) {
+                    return Some(answers.clone());
+                }
+            }
+        }
+    }
+
+    // 3. setup_answers at top level: { "setup_answers": { "state-redis": { ... } } }
+    if let Some(setup) = map.get("setup_answers").and_then(|v| v.as_object()) {
+        if let Some(answers) = setup.get(STATE_REDIS_PACK_ID) {
+            if answers.as_object().is_some_and(|m| !m.is_empty()) {
+                return Some(answers.clone());
+            }
+        }
+    }
+
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_demo_up_setup(
+    bundle: &Path,
+    domains: &[Domain],
+    setup_input: &Path,
+    tenant_override: Option<String>,
+    team_override: Option<String>,
+    env: &str,
+    runner_binary: Option<PathBuf>,
+    public_base_url: Option<String>,
+    secrets_manager: Option<DynSecretsManager>,
+) -> anyhow::Result<()> {
+    let providers_input = ProvidersInput::load(setup_input)?;
+    for domain in domains {
+        let provider_map = match providers_input.providers_for_domain(*domain) {
+            Some(map) if !map.is_empty() => map,
+            _ => {
+                println!(
+                    "[demo] no providers configured for domain {}; skipping provider setup",
+                    domains::domain_name(*domain)
+                );
+                continue;
+            }
+        };
+        let tenants = if let Some(tenant) = tenant_override.as_ref() {
+            vec![tenant.clone()]
+        } else {
+            let discovered = discover_tenants(bundle, *domain)?;
+            if discovered.is_empty() {
+                println!(
+                    "[demo] no tenants discovered for domain {}; skipping",
+                    domains::domain_name(*domain)
+                );
+                operator_log::warn(
+                    module_path!(),
+                    format!(
+                        "no tenants discovered for domain {}; skipping setup",
+                        domains::domain_name(*domain)
+                    ),
+                );
+                continue;
+            }
+            discovered
+        };
+        let provider_keys: BTreeSet<String> = provider_map.keys().cloned().collect();
+        let mut map = serde_json::Map::new();
+        for (provider, value) in provider_map {
+            map.insert(provider.clone(), value.clone());
+        }
+        let setup_answers =
+            SetupInputAnswers::new(serde_json::Value::Object(map), provider_keys.clone())?;
+        for tenant in tenants {
+            run_domain_command(DomainRunArgs {
+                root: bundle.to_path_buf(),
+                state_root: None,
+                domain: *domain,
+                action: DomainAction::Setup,
+                tenant,
+                team: team_override.clone(),
+                provider_filter: None,
+                dry_run: false,
+                format: PlanFormat::Text,
+                parallel: 1,
+                allow_missing_setup: true,
+                allow_contract_change: false,
+                backup: false,
+                online: false,
+                secrets_env: Some(env.to_string()),
+                runner_binary: runner_binary.clone(),
+                best_effort: false,
+                discovered_providers: None,
+                setup_input: None,
+                allowed_providers: Some(provider_keys.clone()),
+                preloaded_setup_answers: Some(setup_answers.clone()),
+                public_base_url: public_base_url.clone(),
+                secrets_manager: secrets_manager.clone(),
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn demo_provider_files(
@@ -5802,10 +7027,7 @@ fn run_plan_item(
             ) {
                 operator_log::warn(
                     module_path!(),
-                    format!(
-                        "failed to persist qa config provider={}: {err}",
-                        provider_id
-                    ),
+                    format!("failed to persist qa config provider={}: {err}", provider_id),
                 );
             }
         }
@@ -6793,37 +8015,6 @@ mod tests {
                 "oci://ghcr.io/acme/providers/custom:1".to_string(),
                 "repo://messaging/providers/custom@latest".to_string()
             ]
-        );
-    }
-
-    #[test]
-    fn demo_up_args_map_runner_binary_into_start_request() {
-        let args = DemoUpArgs {
-            bundle: Some(PathBuf::from("./bundle")),
-            tenant: Some("demo".to_string()),
-            team: Some("default".to_string()),
-            no_nats: false,
-            nats: NatsModeArg::Off,
-            nats_url: None,
-            config: None,
-            cloudflared: CloudflaredModeArg::Off,
-            cloudflared_binary: None,
-            ngrok: NgrokModeArg::Off,
-            ngrok_binary: None,
-            restart: Vec::new(),
-            runner_binary: Some(PathBuf::from("/tmp/runner")),
-            log_dir: None,
-            verbose: false,
-            quiet: false,
-        };
-
-        let request = args.to_start_request();
-        assert_eq!(request.bundle.as_deref(), Some("./bundle"));
-        assert_eq!(request.tenant.as_deref(), Some("demo"));
-        assert_eq!(request.team.as_deref(), Some("default"));
-        assert_eq!(
-            request.runner_binary.as_deref(),
-            Some(Path::new("/tmp/runner"))
         );
     }
 }
