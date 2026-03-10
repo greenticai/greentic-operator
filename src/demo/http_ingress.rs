@@ -94,9 +94,7 @@ impl TelegramFormStore {
 
 /// Extract form state from an outgoing Adaptive Card envelope.
 /// Returns Some(TelegramFormState) if the card has Input.Text fields.
-fn extract_form_state_from_card(
-    envelope: &ChannelMessageEnvelope,
-) -> Option<TelegramFormState> {
+fn extract_form_state_from_card(envelope: &ChannelMessageEnvelope) -> Option<TelegramFormState> {
     let ac_raw = envelope.metadata.get("adaptive_card")?;
     let card: serde_json::Value = serde_json::from_str(ac_raw).ok()?;
     let body = card.get("body")?.as_array()?;
@@ -439,16 +437,17 @@ async fn handle_request_inner(
         remote_addr: None,
     };
 
-    let result = {
-        let _dispatch_span = tracing::info_span!(
-            "ingress_dispatch",
-            provider = %parsed.provider,
-            tenant = %parsed.tenant,
-            team = %parsed.team,
-            domain = %domains::domain_name(domain),
-        )
-        .entered();
-        dispatch_http_ingress(
+    let result =
+        {
+            let _dispatch_span = tracing::info_span!(
+                "ingress_dispatch",
+                provider = %parsed.provider,
+                tenant = %parsed.tenant,
+                team = %parsed.team,
+                domain = %domains::domain_name(domain),
+            )
+            .entered();
+            dispatch_http_ingress(
             state.runner_host.as_ref(),
             domain,
             &ingress_request,
@@ -462,12 +461,14 @@ async fn handle_request_inner(
             );
             error_response(StatusCode::BAD_GATEWAY, err.to_string())
         })?
-    };
+        };
     operator_log::info(
         module_path!(),
         format!(
             "[ingress] dispatch ok provider={} events={} envelopes={}",
-            parsed.provider, result.events.len(), result.messaging_envelopes.len(),
+            parsed.provider,
+            result.events.len(),
+            result.messaging_envelopes.len(),
         ),
     );
     if !result.events.is_empty() {
@@ -523,9 +524,15 @@ async fn handle_request_inner(
         let tg_forms = state.tg_form_store.clone();
         // Run messaging pipeline in a background thread to avoid blocking the HTTP response.
         std::thread::spawn(move || {
-            if let Err(err) =
-                route_messaging_envelopes(&bundle, &runner_host, &provider, &ctx, envelopes, None, Some(&tg_forms))
-            {
+            if let Err(err) = route_messaging_envelopes(
+                &bundle,
+                &runner_host,
+                &provider,
+                &ctx,
+                envelopes,
+                None,
+                Some(&tg_forms),
+            ) {
                 operator_log::error(
                     module_path!(),
                     format!(
@@ -576,7 +583,12 @@ fn route_messaging_envelopes(
     .entered();
     let team = ctx.team.as_deref();
     let app_pack_result = app::resolve_app_pack_path(bundle, &ctx.tenant, team, None);
-    eprintln!("[directline] resolve_app_pack_path tenant={} team={:?} result={:?}", ctx.tenant, team, app_pack_result.as_ref().map(|p| p.display().to_string()));
+    eprintln!(
+        "[directline] resolve_app_pack_path tenant={} team={:?} result={:?}",
+        ctx.tenant,
+        team,
+        app_pack_result.as_ref().map(|p| p.display().to_string())
+    );
 
     // Resolve pack path separately from flow — card routing only needs the pack.
     let app_pack_path = app_pack_result.ok();
@@ -585,7 +597,11 @@ fn route_messaging_envelopes(
     let app_flow_context = app_pack_path.as_ref().and_then(|pack_path| {
         let pack_info = match app::load_app_pack_info(pack_path) {
             Ok(info) => {
-                eprintln!("[directline] pack_info loaded: pack_id={} flows={:?}", info.pack_id, info.flows.iter().map(|f| &f.id).collect::<Vec<_>>());
+                eprintln!(
+                    "[directline] pack_info loaded: pack_id={} flows={:?}",
+                    info.pack_id,
+                    info.flows.iter().map(|f| &f.id).collect::<Vec<_>>()
+                );
                 info
             }
             Err(e) => {
@@ -593,9 +609,12 @@ fn route_messaging_envelopes(
                 return None;
             }
         };
-        match app::select_app_flow(&pack_info).map(|f| f.clone()) {
+        match app::select_app_flow(&pack_info).cloned() {
             Ok(flow) => {
-                eprintln!("[directline] selected flow: id={} kind={}", flow.id, flow.kind);
+                eprintln!(
+                    "[directline] selected flow: id={} kind={}",
+                    flow.id, flow.kind
+                );
                 Some((pack_info, flow))
             }
             Err(e) => {
@@ -616,9 +635,15 @@ fn route_messaging_envelopes(
             ),
         );
     } else if app_pack_path.is_some() {
-        eprintln!("[directline] app pack found but no flow, card-only mode for {} envelope(s)", envelopes.len());
+        eprintln!(
+            "[directline] app pack found but no flow, card-only mode for {} envelope(s)",
+            envelopes.len()
+        );
     } else {
-        eprintln!("[directline] no app pack found, using echo fallback for {} envelope(s)", envelopes.len());
+        eprintln!(
+            "[directline] no app pack found, using echo fallback for {} envelope(s)",
+            envelopes.len()
+        );
     }
 
     // Pre-process Telegram form replies: when a user replies to a ForceReply
@@ -636,9 +661,9 @@ fn route_messaging_envelopes(
             // (plain text message while form is pending).
             let has_pending_form = is_form_reply
                 || (tg_form_store.is_some()
-                    && envelope.metadata.get("chat_id").is_some()
-                    && envelope.metadata.get("action").is_none()
-                    && envelope.metadata.get("routeToCardId").is_none()
+                    && envelope.metadata.contains_key("chat_id")
+                    && !envelope.metadata.contains_key("action")
+                    && !envelope.metadata.contains_key("routeToCardId")
                     && envelope.text.is_some());
             if has_pending_form {
                 if let Some(store) = tg_form_store {
@@ -679,7 +704,11 @@ fn route_messaging_envelopes(
         let outputs = {
             // MCP tool dispatch: action=mcp triggers a real GitHub API call.
             if envelope.metadata.get("action").map(|s| s.as_str()) == Some("mcp") {
-                let tool = envelope.metadata.get("tool").map(|s| s.as_str()).unwrap_or("");
+                let tool = envelope
+                    .metadata
+                    .get("tool")
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
                 let owner = envelope.metadata.get("owner").cloned().unwrap_or_default();
 
                 // Build args: for create_issue, assemble from form fields;
@@ -721,32 +750,30 @@ fn route_messaging_envelopes(
                 // Read GitHub token from secrets
                 let token = read_github_token(bundle, ctx);
                 match token {
-                    Some(tok) => {
-                        match crate::demo::github_mcp::call_tool(tool, &args, &tok) {
-                            Ok(result) => {
-                                let card = crate::demo::github_mcp::render_card(tool, &result, &owner);
-                                eprintln!("[directline] MCP tool={tool} succeeded, rendering card");
-                                build_card_reply(envelope, &card, &format!("mcp-{tool}"))
-                            }
-                            Err(err) => {
-                                eprintln!("[directline] MCP tool={tool} failed: {err}");
-                                let card = json!({
-                                    "type": "AdaptiveCard", "version": "1.3",
-                                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                                    "body": [
-                                        {"type": "Container", "style": "attention", "items": [
-                                            {"type": "TextBlock", "text": "\u{274c} Error", "size": "large", "weight": "bolder"},
-                                            {"type": "TextBlock", "text": err, "wrap": true, "size": "small"}
-                                        ]}
-                                    ],
-                                    "actions": [
-                                        {"type": "Action.Submit", "title": "\u{2190} Back", "data": {"routeToCardId": "GH-connected"}}
-                                    ]
-                                });
-                                build_card_reply(envelope, &card, "mcp-error")
-                            }
+                    Some(tok) => match crate::demo::github_mcp::call_tool(tool, &args, &tok) {
+                        Ok(result) => {
+                            let card = crate::demo::github_mcp::render_card(tool, &result, &owner);
+                            eprintln!("[directline] MCP tool={tool} succeeded, rendering card");
+                            build_card_reply(envelope, &card, &format!("mcp-{tool}"))
                         }
-                    }
+                        Err(err) => {
+                            eprintln!("[directline] MCP tool={tool} failed: {err}");
+                            let card = json!({
+                                "type": "AdaptiveCard", "version": "1.3",
+                                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                                "body": [
+                                    {"type": "Container", "style": "attention", "items": [
+                                        {"type": "TextBlock", "text": "\u{274c} Error", "size": "large", "weight": "bolder"},
+                                        {"type": "TextBlock", "text": err, "wrap": true, "size": "small"}
+                                    ]}
+                                ],
+                                "actions": [
+                                    {"type": "Action.Submit", "title": "\u{2190} Back", "data": {"routeToCardId": "GH-connected"}}
+                                ]
+                            });
+                            build_card_reply(envelope, &card, "mcp-error")
+                        }
+                    },
                     None => {
                         eprintln!("[directline] no GitHub token found, showing auth card");
                         let card = json!({
@@ -810,7 +837,9 @@ fn route_messaging_envelopes(
                 }
             }
             // Special case: "GH-connected" generates a dynamic card with the user's GitHub info.
-            else if envelope.metadata.get("routeToCardId").map(|s| s.as_str()) == Some("GH-connected") {
+            else if envelope.metadata.get("routeToCardId").map(|s| s.as_str())
+                == Some("GH-connected")
+            {
                 let token = read_github_token(bundle, ctx);
                 match token.and_then(|t| crate::demo::github_mcp::get_authenticated_user(&t).ok()) {
                     Some(username) => {
@@ -821,7 +850,9 @@ fn route_messaging_envelopes(
                         // No valid token — show welcome card instead
                         if let Some(pack_path) = &app_pack_path {
                             match read_card_from_pack(pack_path, "GH-welcome") {
-                                Some(card_json) => build_card_reply(envelope, &card_json, "GH-welcome"),
+                                Some(card_json) => {
+                                    build_card_reply(envelope, &card_json, "GH-welcome")
+                                }
                                 None => echo_fallback(envelope),
                             }
                         } else {
@@ -831,7 +862,9 @@ fn route_messaging_envelopes(
                 }
             }
             // GH-oauth-personal: generate dynamic token input card (never use static pack card)
-            else if envelope.metadata.get("routeToCardId").map(|s| s.as_str()) == Some("GH-oauth-personal") {
+            else if envelope.metadata.get("routeToCardId").map(|s| s.as_str())
+                == Some("GH-oauth-personal")
+            {
                 let card = json!({
                     "type": "AdaptiveCard", "version": "1.3",
                     "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -972,7 +1005,10 @@ fn route_messaging_envelopes(
                             activity["attachmentLayout"] = json!("list");
                         }
                     }
-                    eprintln!("[directline] webchat card reply → direct inject (skip egress) conv={}", conv_id);
+                    eprintln!(
+                        "[directline] webchat card reply → direct inject (skip egress) conv={}",
+                        conv_id
+                    );
                     store.push(conv_id, activity);
                 }
                 continue;
@@ -981,9 +1017,9 @@ fn route_messaging_envelopes(
             let message_value = serde_json::to_value(&out_envelope)?;
 
             let plan = {
-                let _span = info_span!("egress.render_plan", messaging.provider = %provider).entered();
-                match egress::render_plan(runner_host, ctx, provider, message_value.clone())
-                {
+                let _span =
+                    info_span!("egress.render_plan", messaging.provider = %provider).entered();
+                match egress::render_plan(runner_host, ctx, provider, message_value.clone()) {
                     Ok(plan) => plan,
                     Err(err) => {
                         operator_log::warn(
@@ -1023,7 +1059,8 @@ fn route_messaging_envelopes(
                 egress::build_send_payload(payload, &provider_type, &ctx.tenant, ctx.team.clone());
             let send_bytes = serde_json::to_vec(&send_input)?;
             let outcome = {
-                let _span = info_span!("egress.send_payload", messaging.provider = %provider).entered();
+                let _span =
+                    info_span!("egress.send_payload", messaging.provider = %provider).entered();
                 runner_host.invoke_provider_op(
                     Domain::Messaging,
                     provider,
@@ -1041,7 +1078,10 @@ fn route_messaging_envelopes(
                 .unwrap_or(false);
 
             if outcome.success && provider_ok {
-                eprintln!("[directline] send succeeded provider={} envelope_id={}", provider, out_envelope.id);
+                eprintln!(
+                    "[directline] send succeeded provider={} envelope_id={}",
+                    provider, out_envelope.id
+                );
 
                 // For webchat text-only replies, also store in BotActivityStore
                 if provider == "messaging-webchat" {
@@ -1074,7 +1114,10 @@ fn route_messaging_envelopes(
                     .error
                     .clone()
                     .unwrap_or_else(|| provider_msg.to_string());
-                eprintln!("[directline] send FAILED provider={} err={}", provider, err_msg);
+                eprintln!(
+                    "[directline] send FAILED provider={} err={}",
+                    provider, err_msg
+                );
                 operator_log::error(
                     module_path!(),
                     format!(
@@ -1139,13 +1182,12 @@ fn read_github_token(
     bundle: &std::path::Path,
     ctx: &crate::demo::runner_host::OperatorContext,
 ) -> Option<String> {
-    let secrets_path = bundle
-        .join(".greentic/dev/.dev.secrets.env");
+    let secrets_path = bundle.join(".greentic/dev/.dev.secrets.env");
     if let Ok(content) = std::fs::read_to_string(&secrets_path) {
         for line in content.lines() {
             let line = line.trim();
             if line.starts_with("GITHUB_TOKEN=") || line.starts_with("github_token=") {
-                let val = line.splitn(2, '=').nth(1)?.trim().to_string();
+                let val = line.split_once('=')?.1.trim().to_string();
                 if !val.is_empty() {
                     return Some(val);
                 }
@@ -1153,11 +1195,11 @@ fn read_github_token(
         }
     }
     // Also check a dedicated token file
-    let token_file = bundle.join(format!(
-        ".greentic/dev/github_token_{}",
-        ctx.tenant
-    ));
-    std::fs::read_to_string(&token_file).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    let token_file = bundle.join(format!(".greentic/dev/github_token_{}", ctx.tenant));
+    std::fs::read_to_string(&token_file)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Save GitHub token to the demo secrets store.
@@ -1296,10 +1338,19 @@ async fn handle_directline_request(
     if !result.messaging_envelopes.is_empty() {
         let envelopes = result.messaging_envelopes.clone();
         let bundle = state.runner_host.bundle_root().to_path_buf();
-        eprintln!("[directline] routing {} envelope(s) through messaging pipeline", envelopes.len());
-        if let Err(err) =
-            route_messaging_envelopes(&bundle, &state.runner_host, &provider, &context, envelopes, Some(&state.bot_activities), Some(&state.tg_form_store))
-        {
+        eprintln!(
+            "[directline] routing {} envelope(s) through messaging pipeline",
+            envelopes.len()
+        );
+        if let Err(err) = route_messaging_envelopes(
+            &bundle,
+            &state.runner_host,
+            &provider,
+            &context,
+            envelopes,
+            Some(&state.bot_activities),
+            Some(&state.tg_form_store),
+        ) {
             eprintln!("[directline] messaging pipeline FAILED err={err}");
         } else {
             eprintln!("[directline] messaging pipeline completed ok");
@@ -1312,10 +1363,20 @@ async fn handle_directline_request(
         if let Some(ref cid) = conv_id {
             let pending = state.bot_activities.drain(cid);
             if !pending.is_empty() {
-                eprintln!("[directline] injecting {} bot activities for conv={} body_before={}", pending.len(), cid, response.body.as_ref().map(|b| b.len()).unwrap_or(0));
+                eprintln!(
+                    "[directline] injecting {} bot activities for conv={} body_before={}",
+                    pending.len(),
+                    cid,
+                    response.body.as_ref().map(|b| b.len()).unwrap_or(0)
+                );
                 if let Some(ref body_bytes) = response.body {
-                    if let Ok(mut body_json) = serde_json::from_slice::<serde_json::Value>(body_bytes) {
-                        if let Some(activities) = body_json.get_mut("activities").and_then(|a| a.as_array_mut()) {
+                    if let Ok(mut body_json) =
+                        serde_json::from_slice::<serde_json::Value>(body_bytes)
+                    {
+                        if let Some(activities) = body_json
+                            .get_mut("activities")
+                            .and_then(|a| a.as_array_mut())
+                        {
                             activities.extend(pending);
                         }
                         // Increment watermark so Direct Line client recognises new activities
@@ -1327,10 +1388,15 @@ async fn handle_directline_request(
                         if let Ok(new_body) = serde_json::to_vec(&body_json) {
                             eprintln!("[directline] body_after_inject len={}", new_body.len());
                             // Dump to file for debugging
-                            let _ = std::fs::write("/tmp/dl-inject-debug.json", serde_json::to_string_pretty(&body_json).unwrap_or_default());
+                            let _ = std::fs::write(
+                                "/tmp/dl-inject-debug.json",
+                                serde_json::to_string_pretty(&body_json).unwrap_or_default(),
+                            );
                             response.body = Some(new_body);
                             // Remove stale Content-Length so hyper recalculates it.
-                            response.headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-length"));
+                            response
+                                .headers
+                                .retain(|(k, _)| !k.eq_ignore_ascii_case("content-length"));
                         }
                     }
                 }
@@ -1406,6 +1472,7 @@ fn path_needs_gui_trailing_slash(path: &str) -> bool {
 /// for SPA client-side routing.  When `tenant` is provided and the response is
 /// index.html, a small `<script>` block is injected to set `window.__TENANT__`
 /// and `window.__BASE_PATH__` so the SPA resolves skin/assets correctly.
+#[allow(clippy::result_large_err)]
 fn serve_spa_file(
     spa_dir: &Path,
     request_path: &str,

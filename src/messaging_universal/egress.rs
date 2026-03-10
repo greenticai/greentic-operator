@@ -314,7 +314,8 @@ fn invoke_flow(
     )
     .entered();
     let input_bytes = serde_json::to_vec(&payload)?;
-    let outcome = runner_host.invoke_provider_op(Domain::Messaging, provider, op, &input_bytes, ctx);
+    let outcome =
+        runner_host.invoke_provider_op(Domain::Messaging, provider, op, &input_bytes, ctx);
     if let Ok(ref o) = outcome {
         if o.success {
             tracing::info!(provider = %provider, op = %op, "wasm invoke succeeded");

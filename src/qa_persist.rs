@@ -189,7 +189,15 @@ pub async fn persist_all_config_as_secrets(
     // secrets by their canonical requirement key (e.g. WEBEX_BOT_TOKEN →
     // webex_bot_token) even when the answers file uses a shorter key (bot_token).
     if let Some(pp) = pack_path {
-        seed_secret_requirement_aliases(&mut entries, config_map, env, tenant, team, provider_id, pp);
+        seed_secret_requirement_aliases(
+            &mut entries,
+            config_map,
+            env,
+            tenant,
+            team,
+            provider_id,
+            pp,
+        );
     }
 
     if entries.is_empty() {
@@ -226,10 +234,10 @@ fn seed_secret_requirement_aliases(
         Err(_) => return,
     };
     let normalize = crate::secret_name::canonical_secret_name;
-    let existing_keys: std::collections::HashSet<String> =
-        entries.iter().filter_map(|e| {
-            e.uri.rsplit('/').next().map(String::from)
-        }).collect();
+    let existing_keys: std::collections::HashSet<String> = entries
+        .iter()
+        .filter_map(|e| e.uri.rsplit('/').next().map(String::from))
+        .collect();
 
     for req in &reqs {
         let canonical_req_key = normalize(&req.key);

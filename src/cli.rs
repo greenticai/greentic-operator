@@ -2072,22 +2072,21 @@ impl DemoUpArgs {
                 .as_ref()
                 .and_then(|path| load_setup_input(path).ok())
                 .and_then(|raw| extract_state_redis_setup_answers(&raw));
-            let upgraded_state_store =
-                match crate::capability_bootstrap::try_upgrade_state_store(
-                    &bundle,
-                    &capability_runner,
-                    &capability_secrets_handle,
-                    &tenant_ref,
-                    team_ref.as_deref(),
-                    None,
-                    state_redis_answers.as_ref(),
-                ) {
-                    Ok(store) => store,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "state store capability bootstrap failed — using in-memory");
-                        None
-                    }
-                };
+            let upgraded_state_store = match crate::capability_bootstrap::try_upgrade_state_store(
+                &bundle,
+                &capability_runner,
+                &capability_secrets_handle,
+                &tenant_ref,
+                team_ref.as_deref(),
+                None,
+                state_redis_answers.as_ref(),
+            ) {
+                Ok(store) => store,
+                Err(e) => {
+                    tracing::warn!(error = %e, "state store capability bootstrap failed — using in-memory");
+                    None
+                }
+            };
 
             let mut cloudflared_config = match self.cloudflared {
                 CloudflaredModeArg::Off => None,
@@ -2742,7 +2741,6 @@ impl DemoSetupArgs {
         Ok(())
     }
 }
-
 
 impl DemoPolicyArgs {
     fn run(self, policy: Policy) -> anyhow::Result<()> {
@@ -5916,11 +5914,11 @@ fn project_root(arg: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 /// - A local directory path (returned as-is)
 /// - An `https://` or `http://` URL pointing to a `.tar.gz` or `.zip` archive
 ///   (downloaded and extracted to a local cache directory)
-fn resolve_bundle_source(bundle: &PathBuf) -> anyhow::Result<PathBuf> {
+fn resolve_bundle_source(bundle: &Path) -> anyhow::Result<PathBuf> {
     let s = bundle.to_string_lossy();
     if !s.starts_with("https://") && !s.starts_with("http://") {
         // Local path – use as-is.
-        return Ok(bundle.clone());
+        return Ok(bundle.to_path_buf());
     }
 
     // Determine cache directory: ~/.greentic/cache/bundles/<hash>/
@@ -5962,21 +5960,20 @@ fn resolve_bundle_source(bundle: &PathBuf) -> anyhow::Result<PathBuf> {
 
     // Detect format and extract.
     std::fs::create_dir_all(&dest)?;
-    let is_zip = url.ends_with(".zip")
-        || url.ends_with(".gtbundle")
-        || {
-            // Check magic bytes: PK\x03\x04
-            std::fs::read(&tmp_archive)
-                .map(|b| b.len() >= 4 && b[0] == 0x50 && b[1] == 0x4B && b[2] == 0x03 && b[3] == 0x04)
-                .unwrap_or(false)
-        };
+    let is_zip = url.ends_with(".zip") || url.ends_with(".gtbundle") || {
+        // Check magic bytes: PK\x03\x04
+        std::fs::read(&tmp_archive)
+            .map(|b| b.len() >= 4 && b[0] == 0x50 && b[1] == 0x4B && b[2] == 0x03 && b[3] == 0x04)
+            .unwrap_or(false)
+    };
 
     if is_zip {
         let file = std::fs::File::open(&tmp_archive)
             .with_context(|| format!("open downloaded archive {}", tmp_archive.display()))?;
-        let mut archive = zip::ZipArchive::new(file)
-            .with_context(|| "parse downloaded zip archive")?;
-        archive.extract(&dest)
+        let mut archive =
+            zip::ZipArchive::new(file).with_context(|| "parse downloaded zip archive")?;
+        archive
+            .extract(&dest)
             .with_context(|| format!("extract zip to {}", dest.display()))?;
     } else {
         // Assume tar.gz
@@ -5995,9 +5992,7 @@ fn resolve_bundle_source(bundle: &PathBuf) -> anyhow::Result<PathBuf> {
     }
 
     // If the archive extracted into a single subdirectory, flatten it.
-    let entries: Vec<_> = std::fs::read_dir(&dest)?
-        .filter_map(|e| e.ok())
-        .collect();
+    let entries: Vec<_> = std::fs::read_dir(&dest)?.filter_map(|e| e.ok()).collect();
     if entries.len() == 1 && entries[0].file_type().map(|t| t.is_dir()).unwrap_or(false) {
         let inner = entries[0].path();
         // Check if it looks like a bundle (has packs/ or providers/ or gmap.yaml).
@@ -7019,7 +7014,10 @@ fn run_plan_item(
             ) {
                 operator_log::warn(
                     module_path!(),
-                    format!("failed to persist qa config provider={}: {err}", provider_id),
+                    format!(
+                        "failed to persist qa config provider={}: {err}",
+                        provider_id
+                    ),
                 );
             }
         }

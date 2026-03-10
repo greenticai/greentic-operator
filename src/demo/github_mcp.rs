@@ -5,7 +5,7 @@
 //! loading the WASM component through the pack runtime for the demo while
 //! keeping the MCP tool contract identical.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const GITHUB_API: &str = "https://api.github.com";
 
@@ -163,15 +163,16 @@ fn github_get(path: &str, token: &str) -> Result<Value, String> {
             eprintln!("[github_mcp] GET {path} FAILED: {e}");
             format!("HTTP GET {path}: {e}")
         })?;
-    let body: Value = resp.body_mut().read_json()
+    let body: Value = resp
+        .body_mut()
+        .read_json()
         .map_err(|e| format!("JSON parse: {e}"))?;
     Ok(body)
 }
 
 fn github_post(path: &str, token: &str, payload: &Value) -> Result<Value, String> {
     let url = format!("{GITHUB_API}{path}");
-    let payload_str = serde_json::to_string(payload)
-        .map_err(|e| format!("serialize: {e}"))?;
+    let payload_str = serde_json::to_string(payload).map_err(|e| format!("serialize: {e}"))?;
     let mut resp = ureq::post(&url)
         .header("Authorization", &format!("Bearer {token}"))
         .header("Accept", "application/vnd.github+json")
@@ -180,7 +181,9 @@ fn github_post(path: &str, token: &str, payload: &Value) -> Result<Value, String
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send(payload_str.as_bytes())
         .map_err(|e| format!("HTTP POST {path}: {e}"))?;
-    let body: Value = resp.body_mut().read_json()
+    let body: Value = resp
+        .body_mut()
+        .read_json()
         .map_err(|e| format!("JSON parse: {e}"))?;
     Ok(body)
 }
@@ -221,7 +224,9 @@ fn list_repos(args: &Value, token: &str) -> Result<Value, String> {
         .collect();
 
     let has_more = repos.len() == per_page as usize;
-    Ok(json!({ "repos": repos, "count": repos.len(), "page": page, "per_page": per_page, "has_more": has_more, "owner": owner }))
+    Ok(
+        json!({ "repos": repos, "count": repos.len(), "page": page, "per_page": per_page, "has_more": has_more, "owner": owner }),
+    )
 }
 
 fn list_pull_requests(args: &Value, token: &str) -> Result<Value, String> {
@@ -231,9 +236,7 @@ fn list_pull_requests(args: &Value, token: &str) -> Result<Value, String> {
     let per_page = args["per_page"].as_u64().unwrap_or(10);
     let page = args["page"].as_u64().unwrap_or(1);
 
-    let path = format!(
-        "/repos/{owner}/{repo}/pulls?state={state}&per_page={per_page}&page={page}"
-    );
+    let path = format!("/repos/{owner}/{repo}/pulls?state={state}&per_page={per_page}&page={page}");
     let data = github_get(&path, token)?;
 
     let prs: Vec<Value> = data
@@ -268,7 +271,9 @@ fn my_recent_actions(args: &Value, token: &str) -> Result<Value, String> {
     let mut all_runs: Vec<Value> = Vec::new();
     for repo in &repos {
         let full_name = repo["full_name"].as_str().unwrap_or("");
-        if full_name.is_empty() { continue; }
+        if full_name.is_empty() {
+            continue;
+        }
         let path = format!("/repos/{full_name}/actions/runs?per_page=3");
         if let Ok(data) = github_get(&path, token) {
             if let Some(runs) = data["workflow_runs"].as_array() {
@@ -386,9 +391,7 @@ fn list_workflow_runs(args: &Value, token: &str) -> Result<Value, String> {
     let per_page = args["per_page"].as_u64().unwrap_or(10);
     let page = args["page"].as_u64().unwrap_or(1);
 
-    let mut path = format!(
-        "/repos/{owner}/{repo}/actions/runs?per_page={per_page}&page={page}"
-    );
+    let mut path = format!("/repos/{owner}/{repo}/actions/runs?per_page={per_page}&page={page}");
     if let Some(status) = args["status"].as_str() {
         path.push_str(&format!("&status={status}"));
     }
@@ -430,12 +433,13 @@ fn search_my_prs(_args: &Value, token: &str) -> Result<Value, String> {
     let per_page = _args["per_page"].as_u64().unwrap_or(8);
     let q = format!("type:pr author:{user} is:open");
     let encoded_q = q.replace(' ', "+");
-    let path = format!(
-        "/search/issues?q={encoded_q}&per_page={per_page}&sort=updated&order=desc"
-    );
+    let path = format!("/search/issues?q={encoded_q}&per_page={per_page}&sort=updated&order=desc");
     eprintln!("[github_mcp] search_my_prs path={path}");
     let data = github_get(&path, token)?;
-    eprintln!("[github_mcp] search_my_prs total_count={}", data["total_count"]);
+    eprintln!(
+        "[github_mcp] search_my_prs total_count={}",
+        data["total_count"]
+    );
 
     let prs: Vec<Value> = data["items"]
         .as_array()
@@ -472,9 +476,7 @@ fn search_my_issues(args: &Value, token: &str) -> Result<Value, String> {
         _ => format!("type:issue involves:{user} is:open"),
     };
     let encoded_q = query.replace(' ', "+");
-    let path = format!(
-        "/search/issues?q={encoded_q}&per_page={per_page}&sort=updated&order=desc"
-    );
+    let path = format!("/search/issues?q={encoded_q}&per_page={per_page}&sort=updated&order=desc");
     let data = github_get(&path, token)?;
 
     let issues: Vec<Value> = data["items"]
@@ -702,8 +704,12 @@ fn render_repo_detail_card(data: &Value) -> Value {
     })
 }
 
+#[allow(dead_code)]
 fn render_prs_card(data: &Value) -> Value {
-    let prs = data["pull_requests"].as_array().cloned().unwrap_or_default();
+    let prs = data["pull_requests"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let mut body: Vec<Value> = vec![json!({
         "type": "Container",
         "style": "emphasis",
@@ -850,7 +856,10 @@ fn render_issue_created_card(data: &Value) -> Value {
 }
 
 fn render_actions_card(data: &Value) -> Value {
-    let runs = data["workflow_runs"].as_array().cloned().unwrap_or_default();
+    let runs = data["workflow_runs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let mut body: Vec<Value> = vec![json!({
         "type": "Container",
         "style": "emphasis",
@@ -922,7 +931,10 @@ fn render_actions_card(data: &Value) -> Value {
 }
 
 fn render_my_prs_card(data: &Value) -> Value {
-    let prs = data["pull_requests"].as_array().cloned().unwrap_or_default();
+    let prs = data["pull_requests"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let user = data["user"].as_str().unwrap_or("you");
     let mut body: Vec<Value> = vec![json!({
         "type": "Container",
@@ -975,7 +987,10 @@ fn render_my_prs_card(data: &Value) -> Value {
 }
 
 fn render_notifications_card(data: &Value) -> Value {
-    let notifs = data["notifications"].as_array().cloned().unwrap_or_default();
+    let notifs = data["notifications"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let mut body: Vec<Value> = vec![json!({
         "type": "Container",
         "style": "emphasis",

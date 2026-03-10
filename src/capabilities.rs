@@ -811,8 +811,18 @@ mod tests {
         by_cap_id.insert(
             CAP_MESSAGING_V1.to_string(),
             vec![
-                make_messaging_offer("offer-telegram", "messaging.configure", true, Some("setup.yaml")),
-                make_messaging_offer("offer-slack", "messaging.configure", true, Some("setup.yaml")),
+                make_messaging_offer(
+                    "offer-telegram",
+                    "messaging.configure",
+                    true,
+                    Some("setup.yaml"),
+                ),
+                make_messaging_offer(
+                    "offer-slack",
+                    "messaging.configure",
+                    true,
+                    Some("setup.yaml"),
+                ),
             ],
         );
         let registry = CapabilityRegistry { by_cap_id };

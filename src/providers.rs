@@ -240,7 +240,11 @@ pub fn run_provider_setup(
                         }
                     }
                     try_webhook_setup(
-                        config_dir, &provider, &config.tenant, Some(&config.team), &wh_config,
+                        config_dir,
+                        &provider,
+                        &config.tenant,
+                        Some(&config.team),
+                        &wh_config,
                     );
                 }
                 let status_path = providers_root.join(format!("{provider}.status.json"));
@@ -294,7 +298,11 @@ pub fn run_provider_setup(
                     }
                 }
                 try_webhook_setup(
-                    config_dir, &provider, &config.tenant, Some(&config.team), &wh_config,
+                    config_dir,
+                    &provider,
+                    &config.tenant,
+                    Some(&config.team),
+                    &wh_config,
                 );
             }
             let status_path = providers_root.join(format!("{provider}.status.json"));
@@ -485,15 +493,13 @@ fn build_input(
     });
     let mut config = serde_json::json!({});
     // Use runtime public_base_url, fall back to answers if not available
-    let effective_url = public_base_url
-        .map(|u| u.to_string())
-        .or_else(|| {
-            answers
-                .and_then(|a| a.get("public_base_url"))
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        });
+    let effective_url = public_base_url.map(|u| u.to_string()).or_else(|| {
+        answers
+            .and_then(|a| a.get("public_base_url"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    });
     if let Some(ref url) = effective_url {
         payload["public_base_url"] = Value::String(url.clone());
         config["public_base_url"] = Value::String(url.clone());

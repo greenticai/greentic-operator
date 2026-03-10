@@ -278,13 +278,15 @@ pub fn try_upgrade_telemetry(
     let payload = serde_json::json!({});
     let payload_bytes = serde_json::to_vec(&payload)?;
 
-    let outcome =
-        runner_host.invoke_capability(CAP_TELEMETRY_V1, TELEMETRY_CONFIGURE_OP, &payload_bytes, &ctx)?;
+    let outcome = runner_host.invoke_capability(
+        CAP_TELEMETRY_V1,
+        TELEMETRY_CONFIGURE_OP,
+        &payload_bytes,
+        &ctx,
+    )?;
 
     if !outcome.success {
-        let error_msg = outcome
-            .error
-            .unwrap_or_else(|| "unknown error".to_string());
+        let error_msg = outcome.error.unwrap_or_else(|| "unknown error".to_string());
         tracing::warn!(error = %error_msg, "telemetry.configure capability invocation failed");
         return Ok(false);
     }
@@ -363,7 +365,10 @@ pub fn try_upgrade_state_store(
 
     // 1. Resolve the state.kv capability
     let Some(binding) = runner_host.resolve_capability(CAP_STATE_KV_V1, None, scope) else {
-        eprintln!("[state-store] no capability '{}' found — using in-memory", CAP_STATE_KV_V1);
+        eprintln!(
+            "[state-store] no capability '{}' found — using in-memory",
+            CAP_STATE_KV_V1
+        );
         return Ok(None);
     };
     eprintln!(
@@ -444,7 +449,10 @@ pub fn try_upgrade_state_store(
         match rt.block_on(manager.read(&secret_uri)) {
             Ok(bytes) => {
                 let url = String::from_utf8(bytes).ok();
-                eprintln!("[state-store] redis_url secret found (len={})", url.as_ref().map_or(0, |s| s.len()));
+                eprintln!(
+                    "[state-store] redis_url secret found (len={})",
+                    url.as_ref().map_or(0, |s| s.len())
+                );
                 url
             }
             Err(e) => {
