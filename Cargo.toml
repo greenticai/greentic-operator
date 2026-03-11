@@ -109,5 +109,3 @@ greentic-interfaces-guest = { path = "vendor/patches/greentic-interfaces-guest" 
 greentic-interfaces-host = { path = "vendor/patches/greentic-interfaces-host" }
 greentic-interfaces-wasmtime = { path = "vendor/patches/greentic-interfaces-wasmtime" }
 greentic-runner-host = { path = "vendor/patches/greentic-runner-host" }
-greentic-start = { path = "../greentic-start" }
-greentic-telemetry = { path = "../greentic-telemetry" }
