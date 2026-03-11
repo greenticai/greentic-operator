@@ -1,7 +1,6 @@
 use clap::{Parser, error::ErrorKind};
 use greentic_operator::cli;
 use greentic_operator::operator_i18n;
-use greentic_operator::start_delegate;
 use std::env;
 
 fn main() -> anyhow::Result<()> {
@@ -17,17 +16,6 @@ fn main() -> anyhow::Result<()> {
     }
     let selected_locale = operator_i18n::select_locale(cli_locale_arg(&raw_args).as_deref());
     operator_i18n::set_locale(&selected_locale);
-    if start_delegate::should_delegate_demo_lifecycle(&raw_args)
-        && matches!(lifecycle_subcommand(&raw_args), Some("stop" | "restart"))
-    {
-        match start_delegate::delegate_to_greentic_start(&raw_args) {
-            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-            Err(err) => {
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
-        }
-    }
     if should_print_top_level_help(&raw_args) {
         print_top_level_help();
         return Ok(());
@@ -59,28 +47,6 @@ fn main() -> anyhow::Result<()> {
     let result = cli.run();
     greentic_telemetry::shutdown();
     result
-}
-
-fn lifecycle_subcommand(args: &[String]) -> Option<&str> {
-    let mut positionals = Vec::new();
-    let mut idx = 0usize;
-    while idx < args.len() {
-        let arg = &args[idx];
-        if arg == "--locale" {
-            idx += 2;
-            continue;
-        }
-        if arg.starts_with("--locale=") || arg.starts_with('-') {
-            idx += 1;
-            continue;
-        }
-        positionals.push(arg.as_str());
-        idx += 1;
-    }
-    if positionals.len() < 2 || positionals[0] != "demo" {
-        return None;
-    }
-    Some(positionals[1])
 }
 
 fn cli_locale_arg(args: &[String]) -> Option<String> {
@@ -248,6 +214,20 @@ fn print_demo_help() {
         operator_i18n::tr(
             "cli.demo.help.command.start",
             "Start demo services from a bundle."
+        )
+    );
+    println!(
+        "  restart        {}",
+        operator_i18n::tr(
+            "cli.demo.help.command.restart",
+            "Restart demo lifecycle services from a bundle."
+        )
+    );
+    println!(
+        "  stop           {}",
+        operator_i18n::tr(
+            "cli.demo.help.command.stop",
+            "Stop demo lifecycle services from a bundle."
         )
     );
     println!(

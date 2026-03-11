@@ -45,7 +45,6 @@ pub mod secrets_setup;
 pub mod services;
 pub mod setup_input;
 pub mod setup_to_formspec;
-pub mod start_delegate;
 pub mod state_layout;
 pub mod subscriptions_universal;
 pub mod supervisor;

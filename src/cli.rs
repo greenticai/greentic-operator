@@ -13,10 +13,6 @@ use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
-use base64::Engine as _;
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
-use tokio::runtime::Runtime;
-
 use crate::bin_resolver::{self, ResolveCtx};
 use crate::capabilities::ResolveScope;
 use crate::config;
@@ -43,11 +39,10 @@ use crate::qa_setup_wizard;
 use crate::runner_exec;
 use crate::runner_integration;
 use crate::runtime_state::RuntimePaths;
-use crate::secrets_gate::{self, DynSecretsManager, SecretsManagerHandle};
+use crate::secrets_gate::{self, DynSecretsManager};
 use crate::secrets_manager;
 use crate::secrets_setup::resolve_env;
 use crate::setup_input::{SetupInputAnswers, collect_setup_answers, load_setup_input};
-use crate::start_delegate;
 use crate::state_layout;
 use crate::subscriptions_universal::{
     build_runner,
@@ -61,11 +56,18 @@ use crate::wizard_executor;
 use crate::wizard_i18n;
 use crate::wizard_plan_builder;
 use crate::wizard_spec_builder;
+use base64::Engine as _;
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use greentic_qa_lib::{
     I18nConfig, QaLibError, QaRunner, ResolvedI18nMap, WizardDriver, WizardFrontend,
     WizardRunConfig,
 };
 use greentic_runner_host::secrets::default_manager;
+use greentic_start::{
+    CloudflaredModeArg as StartCloudflaredModeArg, NatsModeArg as StartNatsModeArg,
+    NgrokModeArg as StartNgrokModeArg, RestartTarget as StartRestartTarget, StartRequest,
+    StopRequest, run_restart_request, run_start_request, run_stop_request,
+};
 use greentic_types::{ChannelMessageEnvelope, Destination, EnvId, TeamId, TenantCtx, TenantId};
 use std::time::Duration;
 use uuid::Uuid;
@@ -103,6 +105,8 @@ enum DemoSubcommand {
     #[command(hide = true)]
     Up(DemoUpArgs),
     Start(DemoUpArgs),
+    Restart(DemoUpArgs),
+    Stop(DemoStopArgs),
     Setup(DemoSetupArgs),
     Send(DemoSendArgs),
     #[command(about = "Send a synthetic HTTP request through the messaging ingress pipeline")]
@@ -300,6 +304,40 @@ struct DemoUpArgs {
         conflicts_with = "verbose"
     )]
     quiet: bool,
+}
+
+#[derive(Parser)]
+#[command(
+    about = "Stop demo services from a bundle.",
+    long_about = "Stops demo lifecycle services using greentic-start library orchestration."
+)]
+struct DemoStopArgs {
+    #[arg(
+        long,
+        help_heading = "Main options",
+        help = "Path to the bundle directory to run in bundle mode."
+    )]
+    bundle: Option<PathBuf>,
+    #[arg(
+        long,
+        help_heading = "Optional options",
+        help = "Override the state directory instead of deriving it from the bundle."
+    )]
+    state_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        default_value = DEMO_DEFAULT_TENANT,
+        help_heading = "Optional options",
+        help = "Tenant to target when stopping demo services."
+    )]
+    tenant: String,
+    #[arg(
+        long,
+        default_value = DEMO_DEFAULT_TEAM,
+        help_heading = "Optional options",
+        help = "Team to target when stopping demo services."
+    )]
+    team: String,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1773,6 +1811,8 @@ impl DemoCommand {
             DemoSubcommand::Build(args) => args.run(ctx),
             DemoSubcommand::Up(args) => args.run_start(ctx),
             DemoSubcommand::Start(args) => args.run_start(ctx),
+            DemoSubcommand::Restart(args) => args.run_restart(ctx),
+            DemoSubcommand::Stop(args) => args.run(),
             DemoSubcommand::Setup(args) => args.run(),
             DemoSubcommand::Send(args) => args.run(),
             DemoSubcommand::Ingress(args) => args.run(),
@@ -1841,93 +1881,53 @@ impl DemoBuildArgs {
 
 impl DemoUpArgs {
     fn run_start(self, _ctx: &AppCtx) -> anyhow::Result<()> {
-        self.run_with_shutdown()
+        run_start_request(self.to_start_request())
     }
 
-    fn run_with_shutdown(self) -> anyhow::Result<()> {
-        let args = self.to_greentic_start_args();
-        let status = start_delegate::delegate_to_greentic_start(&args)?;
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("greentic-start lifecycle command failed")
-        }
+    fn run_restart(self, _ctx: &AppCtx) -> anyhow::Result<()> {
+        run_restart_request(self.to_start_request())
     }
 
-    fn to_greentic_start_args(&self) -> Vec<String> {
-        let mut args = vec!["demo".to_string(), "start".to_string()];
-
-        push_path_arg(&mut args, "bundle", self.bundle.as_ref());
-        push_path_arg(&mut args, "config", self.config.as_ref());
-        push_opt_arg(&mut args, "tenant", self.tenant.as_deref());
-        push_opt_arg(&mut args, "team", self.team.as_deref());
-        push_opt_arg(&mut args, "nats-url", self.nats_url.as_deref());
-        push_opt_arg(
-            &mut args,
-            "cloudflared",
-            Some(match self.cloudflared {
-                CloudflaredModeArg::On => "on",
-                CloudflaredModeArg::Off => "off",
-            }),
-        );
-        push_path_arg(
-            &mut args,
-            "cloudflared-binary",
-            self.cloudflared_binary.as_ref(),
-        );
-        push_opt_arg(
-            &mut args,
-            "ngrok",
-            Some(match self.ngrok {
-                NgrokModeArg::On => "on",
-                NgrokModeArg::Off => "off",
-            }),
-        );
-        push_path_arg(&mut args, "ngrok-binary", self.ngrok_binary.as_ref());
-        push_path_arg(&mut args, "runner-binary", self.runner_binary.as_ref());
-        push_path_arg(&mut args, "log-dir", self.log_dir.as_ref());
-        push_opt_arg(
-            &mut args,
-            "nats",
-            Some(match self.nats {
-                NatsModeArg::Off => "off",
-                NatsModeArg::On => "on",
-                NatsModeArg::External => "external",
-            }),
-        );
-
-        if self.no_nats {
-            args.push("--no-nats".to_string());
+    fn to_start_request(&self) -> StartRequest {
+        StartRequest {
+            bundle: self.bundle.as_ref().map(|path| path.display().to_string()),
+            tenant: self.tenant.clone(),
+            team: self.team.clone(),
+            no_nats: self.no_nats,
+            nats: match self.nats {
+                NatsModeArg::Off => StartNatsModeArg::Off,
+                NatsModeArg::On => StartNatsModeArg::On,
+                NatsModeArg::External => StartNatsModeArg::External,
+            },
+            nats_url: self.nats_url.clone(),
+            config: self.config.clone(),
+            cloudflared: match self.cloudflared {
+                CloudflaredModeArg::On => StartCloudflaredModeArg::On,
+                CloudflaredModeArg::Off => StartCloudflaredModeArg::Off,
+            },
+            cloudflared_binary: self.cloudflared_binary.clone(),
+            ngrok: match self.ngrok {
+                NgrokModeArg::On => StartNgrokModeArg::On,
+                NgrokModeArg::Off => StartNgrokModeArg::Off,
+            },
+            ngrok_binary: self.ngrok_binary.clone(),
+            runner_binary: self.runner_binary.clone(),
+            restart: self.restart.iter().map(map_restart_target).collect(),
+            log_dir: self.log_dir.clone(),
+            verbose: self.verbose,
+            quiet: self.quiet,
         }
-        if self.verbose {
-            args.push("--verbose".to_string());
-        }
-        if self.quiet {
-            args.push("--quiet".to_string());
-        }
-
-        for restart in &self.restart {
-            args.push("--restart".to_string());
-            args.push(restart_name(restart));
-        }
-
-        args
     }
 }
 
-fn push_opt_arg(args: &mut Vec<String>, flag: &str, value: Option<&str>) {
-    if let Some(value) = value
-        && !value.is_empty()
-    {
-        args.push(format!("--{flag}"));
-        args.push(value.to_string());
-    }
-}
-
-fn push_path_arg(args: &mut Vec<String>, flag: &str, value: Option<&PathBuf>) {
-    if let Some(value) = value {
-        args.push(format!("--{flag}"));
-        args.push(value.display().to_string());
+impl DemoStopArgs {
+    fn run(self) -> anyhow::Result<()> {
+        run_stop_request(StopRequest {
+            bundle: self.bundle.map(|path| path.display().to_string()),
+            state_dir: self.state_dir,
+            tenant: self.tenant,
+            team: self.team,
+        })
     }
 }
 
@@ -4887,26 +4887,16 @@ fn write_if_missing(path: &Path, contents: &str) -> anyhow::Result<()> {
     fs::write(path, contents)?;
     Ok(())
 }
-fn restart_name(target: &RestartTarget) -> String {
+fn map_restart_target(target: &RestartTarget) -> StartRestartTarget {
     match target {
-        RestartTarget::All => "all",
-        RestartTarget::Cloudflared => "cloudflared",
-        RestartTarget::Ngrok => "ngrok",
-        RestartTarget::Nats => "nats",
-        RestartTarget::Gateway => "gateway",
-        RestartTarget::Egress => "egress",
-        RestartTarget::Subscriptions => "subscriptions",
+        RestartTarget::All => StartRestartTarget::All,
+        RestartTarget::Cloudflared => StartRestartTarget::Cloudflared,
+        RestartTarget::Ngrok => StartRestartTarget::Ngrok,
+        RestartTarget::Nats => StartRestartTarget::Nats,
+        RestartTarget::Gateway => StartRestartTarget::Gateway,
+        RestartTarget::Egress => StartRestartTarget::Egress,
+        RestartTarget::Subscriptions => StartRestartTarget::Subscriptions,
     }
-    .to_string()
-}
-
-fn wait_for_ctrlc() -> anyhow::Result<()> {
-    let runtime = Runtime::new().context("failed to spawn runtime for Ctrl+C listener")?;
-    runtime.block_on(async {
-        tokio::signal::ctrl_c()
-            .await
-            .map_err(|err| anyhow::anyhow!("failed to wait for Ctrl+C: {err}"))
-    })
 }
 
 impl DemoStatusArgs {
@@ -6803,6 +6793,37 @@ mod tests {
                 "oci://ghcr.io/acme/providers/custom:1".to_string(),
                 "repo://messaging/providers/custom@latest".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn demo_up_args_map_runner_binary_into_start_request() {
+        let args = DemoUpArgs {
+            bundle: Some(PathBuf::from("./bundle")),
+            tenant: Some("demo".to_string()),
+            team: Some("default".to_string()),
+            no_nats: false,
+            nats: NatsModeArg::Off,
+            nats_url: None,
+            config: None,
+            cloudflared: CloudflaredModeArg::Off,
+            cloudflared_binary: None,
+            ngrok: NgrokModeArg::Off,
+            ngrok_binary: None,
+            restart: Vec::new(),
+            runner_binary: Some(PathBuf::from("/tmp/runner")),
+            log_dir: None,
+            verbose: false,
+            quiet: false,
+        };
+
+        let request = args.to_start_request();
+        assert_eq!(request.bundle.as_deref(), Some("./bundle"));
+        assert_eq!(request.tenant.as_deref(), Some("demo"));
+        assert_eq!(request.team.as_deref(), Some("default"));
+        assert_eq!(
+            request.runner_binary.as_deref(),
+            Some(Path::new("/tmp/runner"))
         );
     }
 }
