@@ -2,10 +2,10 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use greentic_operator::config::load_demo_config;
-use greentic_operator::demo::demo_up_services;
-use greentic_operator::runtime_state::RuntimePaths;
-use greentic_operator::supervisor;
+use greentic_start::config::load_demo_config;
+use greentic_start::runtime::demo_up_services;
+use greentic_start::runtime_state::RuntimePaths;
+use greentic_start::supervisor;
 
 fn write_pack(path: &std::path::Path, pack_id: &str) -> anyhow::Result<()> {
     let file = std::fs::File::create(path)?;
@@ -88,18 +88,7 @@ services:
         None,
         None,
         &BTreeSet::new(),
-        greentic_operator::providers::ProviderSetupOptions {
-            providers: None,
-            verify_webhooks: false,
-            force_setup: false,
-            skip_setup: true,
-            skip_secrets_init: true,
-            allow_contract_change: false,
-            backup: false,
-            setup_input: None,
-            runner_binary: None,
-            continue_on_error: true,
-        },
+        None,
         &log_dir,
         true,
     )

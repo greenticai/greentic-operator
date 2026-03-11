@@ -217,6 +217,20 @@ fn print_demo_help() {
         )
     );
     println!(
+        "  restart        {}",
+        operator_i18n::tr(
+            "cli.demo.help.command.restart",
+            "Restart demo lifecycle services from a bundle."
+        )
+    );
+    println!(
+        "  stop           {}",
+        operator_i18n::tr(
+            "cli.demo.help.command.stop",
+            "Stop demo lifecycle services from a bundle."
+        )
+    );
+    println!(
         "  setup          {}",
         operator_i18n::tr(
             "cli.demo.help.command.setup",
