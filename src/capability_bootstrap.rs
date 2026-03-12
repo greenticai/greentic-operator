@@ -3,9 +3,12 @@
 //! Extracted from `cli.rs` to keep the CLI module focused on argument
 //! parsing and command dispatch.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use greentic_state::redis_store::RedisStateStore;
 
 use crate::capabilities::ResolveScope;
 use crate::demo::runner_host::{DemoRunnerHost, OperatorContext};
@@ -165,6 +168,184 @@ pub fn log_capability_bootstrap_report(
 
 const CAP_TELEMETRY_V1: &str = "greentic.cap.telemetry.v1";
 const TELEMETRY_CONFIGURE_OP: &str = "telemetry.configure";
+const DEFAULT_TELEMETRY_SERVICE_NAME: &str = "greentic-operator";
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct LegacyTelemetryProviderConfig {
+    #[serde(default)]
+    service_name: Option<String>,
+    #[serde(default)]
+    export_mode: Option<String>,
+    #[serde(default)]
+    preset: Option<String>,
+    #[serde(default)]
+    endpoint: Option<String>,
+    #[serde(default, alias = "otlp_endpoint")]
+    otlp_endpoint: Option<String>,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(default, alias = "otlp_headers")]
+    otlp_headers: HashMap<String, String>,
+    #[serde(default)]
+    sampling_ratio: Option<f64>,
+    #[serde(default)]
+    compression: Option<String>,
+}
+
+impl LegacyTelemetryProviderConfig {
+    fn service_name(&self) -> &str {
+        self.service_name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(DEFAULT_TELEMETRY_SERVICE_NAME)
+    }
+
+    fn endpoint(&self) -> Option<&str> {
+        self.endpoint
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                self.otlp_endpoint
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+            })
+    }
+
+    fn merged_headers(&self) -> HashMap<String, String> {
+        let mut headers = self.otlp_headers.clone();
+        headers.extend(self.headers.clone());
+        headers
+    }
+
+    fn to_runtime_config(
+        &self,
+    ) -> Result<(
+        greentic_telemetry::TelemetryConfig,
+        greentic_telemetry::export::ExportConfig,
+    )> {
+        use greentic_telemetry::export::{
+            Compression as RuntimeCompression, ExportConfig, ExportMode,
+            Sampling as RuntimeSampling,
+        };
+
+        let preset = self.preset.as_deref().map(parse_cloud_preset).transpose()?;
+        let preset_config = preset
+            .map(greentic_telemetry::presets::load_preset)
+            .transpose()?
+            .unwrap_or_default();
+
+        let mode = if let Some(export_mode) = self.export_mode.as_deref() {
+            parse_export_mode(export_mode)?
+        } else {
+            preset_config.export_mode.unwrap_or(ExportMode::JsonStdout)
+        };
+
+        let endpoint = self
+            .endpoint()
+            .map(str::to_owned)
+            .or(preset_config.otlp_endpoint);
+
+        let mut headers = preset_config.otlp_headers;
+        headers.extend(self.merged_headers());
+
+        let sampling = match self.sampling_ratio {
+            Some(ratio) if !(0.0..=1.0).contains(&ratio) => {
+                return Err(anyhow!(
+                    "telemetry.configure returned sampling_ratio outside 0.0..=1.0: {ratio}"
+                ));
+            }
+            Some(ratio) if ratio <= 0.0 => RuntimeSampling::AlwaysOff,
+            Some(ratio) if ratio >= 1.0 => RuntimeSampling::AlwaysOn,
+            Some(ratio) => RuntimeSampling::TraceIdRatio(ratio),
+            None => RuntimeSampling::Parent,
+        };
+
+        let compression = self
+            .compression
+            .as_deref()
+            .map(parse_compression)
+            .transpose()?;
+
+        Ok((
+            greentic_telemetry::TelemetryConfig {
+                service_name: self.service_name().to_string(),
+            },
+            ExportConfig {
+                mode,
+                endpoint,
+                headers,
+                sampling,
+                compression: compression.map(|value| match value {
+                    CompressionCompat::Gzip => RuntimeCompression::Gzip,
+                }),
+            },
+        ))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CompressionCompat {
+    Gzip,
+}
+
+fn parse_export_mode(value: &str) -> Result<greentic_telemetry::export::ExportMode> {
+    use greentic_telemetry::export::ExportMode;
+
+    match value.trim().to_ascii_lowercase().as_str() {
+        "json-stdout" | "json_stdout" | "stdout" => Ok(ExportMode::JsonStdout),
+        "otlp-grpc" | "otlp_grpc" => Ok(ExportMode::OtlpGrpc),
+        "otlp-http" | "otlp_http" => Ok(ExportMode::OtlpHttp),
+        other => Err(anyhow!("unsupported telemetry export_mode '{other}'")),
+    }
+}
+
+fn parse_cloud_preset(value: &str) -> Result<greentic_telemetry::presets::CloudPreset> {
+    use greentic_telemetry::presets::CloudPreset;
+
+    match value.trim().to_ascii_lowercase().as_str() {
+        "aws" => Ok(CloudPreset::Aws),
+        "gcp" => Ok(CloudPreset::Gcp),
+        "azure" => Ok(CloudPreset::Azure),
+        "datadog" => Ok(CloudPreset::Datadog),
+        "loki" => Ok(CloudPreset::Loki),
+        "none" => Ok(CloudPreset::None),
+        other => Err(anyhow!("unsupported telemetry preset '{other}'")),
+    }
+}
+
+fn parse_compression(value: &str) -> Result<CompressionCompat> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "gzip" => Ok(CompressionCompat::Gzip),
+        other => Err(anyhow!("unsupported telemetry compression '{other}'")),
+    }
+}
+
+fn validate_telemetry_config(config: &LegacyTelemetryProviderConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if config.export_mode.is_none() && config.preset.is_none() {
+        warnings.push(
+            "telemetry.configure returned no export_mode or preset; defaulting to json-stdout"
+                .to_string(),
+        );
+    }
+
+    if matches!(
+        config.export_mode
+            .as_deref()
+            .map(|value| value.trim().to_ascii_lowercase()),
+        Some(mode) if mode == "otlp-grpc" || mode == "otlp_grpc" || mode == "otlp-http" || mode == "otlp_http"
+    ) && config.endpoint().is_none()
+        && config.preset.is_none()
+    {
+        warnings.push(
+            "telemetry.configure returned OTLP mode without endpoint or preset; runtime defaults will be used"
+                .to_string(),
+        );
+    }
+
+    warnings
+}
 
 /// Seed secrets for the telemetry capability pack, invoke the WASM component,
 /// and initialize the OTel pipeline with the returned config.
@@ -291,7 +472,7 @@ pub fn try_upgrade_telemetry(
         return Ok(false);
     }
 
-    // 5. Parse the TelemetryProviderConfig from the outcome
+    // 5. Parse the telemetry provider output using a local compatibility shim.
     let raw_output = match outcome.output {
         Some(value) => value,
         None => {
@@ -310,22 +491,22 @@ pub fn try_upgrade_telemetry(
         raw_output
     };
 
-    let config: greentic_telemetry::provider::TelemetryProviderConfig =
-        serde_json::from_value(config_json)?;
+    let config: LegacyTelemetryProviderConfig = serde_json::from_value(config_json)?;
 
     // 6. Validate config
-    let warnings = greentic_telemetry::provider::validate_telemetry_config(&config);
+    let warnings = validate_telemetry_config(&config);
     for warning in &warnings {
         tracing::warn!(warning = %warning, "telemetry config validation");
     }
 
     // 7. Initialize OTel pipeline
-    greentic_telemetry::provider::init_from_provider_config(&config)?;
+    let (telemetry_config, export_config) = config.to_runtime_config()?;
+    greentic_telemetry::init_telemetry_from_config(telemetry_config, export_config)?;
 
     tracing::info!(
-        export_mode = %config.export_mode,
+        export_mode = ?config.export_mode,
         preset = ?config.preset,
-        endpoint = ?config.endpoint,
+        endpoint = ?config.endpoint(),
         sampling_ratio = config.sampling_ratio,
         "telemetry upgraded from capability provider"
     );
@@ -482,8 +663,9 @@ pub fn try_upgrade_state_store(
 }
 
 fn create_redis_store(redis_url: &str) -> Result<Option<DynStateStore>> {
-    match greentic_runner_host::storage::new_redis_state_store(redis_url) {
+    match RedisStateStore::from_url(redis_url) {
         Ok(store) => {
+            let store: DynStateStore = Arc::new(store);
             eprintln!("[state-store] ✓ upgraded to Redis: {}", redis_url);
             tracing::info!(
                 redis_url = %redis_url,

@@ -1,6 +1,6 @@
 [package]
 name = "greentic-operator"
-version = "0.4.39"
+version = "0.4.40"
 edition = "2024"
 rust-version = "1.91"
 description = "Greentic operator CLI for local dev and demo orchestration."
@@ -56,7 +56,8 @@ greentic-runner-desktop = { version = "0.4" }
 greentic-runner-host = { version = "0.4" }
 greentic-secrets-lib = { version = "0.4", features = ["providers-dev"] }
 greentic-start = "0.4"
-greentic-telemetry = { version = "0.4", features = ["otlp", "fmt", "azure", "aws", "gcp", "payload-hash"] }
+greentic-state = "0.4"
+greentic-telemetry = { version = "0.4", features = ["otlp", "fmt"] }
 greentic-types = { version = "0.4", features = ["serde"] }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
@@ -102,10 +103,3 @@ members = [
     "secret_name",
     "crates/greentic-secrets-repro",
 ]
-
-[patch.crates-io]
-greentic-interfaces = { path = "vendor/patches/greentic-interfaces" }
-greentic-interfaces-guest = { path = "vendor/patches/greentic-interfaces-guest" }
-greentic-interfaces-host = { path = "vendor/patches/greentic-interfaces-host" }
-greentic-interfaces-wasmtime = { path = "vendor/patches/greentic-interfaces-wasmtime" }
-greentic-runner-host = { path = "vendor/patches/greentic-runner-host" }

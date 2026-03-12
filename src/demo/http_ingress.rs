@@ -1,8 +1,9 @@
 use std::{
     collections::HashMap,
     convert::Infallible,
+    io::Read,
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, Mutex},
     thread,
 };
@@ -14,7 +15,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::{
     Method, Request, Response, StatusCode,
     body::{Bytes, Incoming},
-    header::{CONTENT_TYPE, HeaderName, HeaderValue},
+    header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, HeaderName, HeaderValue},
     server::conn::http1::Builder as Http1Builder,
     service::service_fn,
 };
@@ -31,6 +32,10 @@ use crate::demo::runner_host::{DemoRunnerHost, OperatorContext};
 use crate::domains::{self, Domain};
 use crate::messaging_universal::{app, dto::ProviderPayloadV1, egress};
 use crate::operator_log;
+use crate::static_routes::{
+    ActiveRouteTable, ReservedRouteSet, StaticRouteDescriptor, StaticRouteMatch,
+    cache_control_value, discover_from_bundle, fallback_asset_path, resolve_asset_path,
+};
 
 /// Operator-level store for bot reply activities.
 ///
@@ -51,11 +56,6 @@ impl BotActivityStore {
         map.entry(conversation_id.to_string())
             .or_default()
             .push(activity);
-    }
-
-    fn drain(&self, conversation_id: &str) -> Vec<serde_json::Value> {
-        let mut map = self.pending.lock().unwrap();
-        map.remove(conversation_id).unwrap_or_default()
     }
 }
 
@@ -172,8 +172,6 @@ pub struct HttpIngressConfig {
     pub bind_addr: SocketAddr,
     pub domains: Vec<Domain>,
     pub runner_host: Arc<DemoRunnerHost>,
-    /// Optional directory containing built webchat SPA assets to serve.
-    pub webchat_spa_dir: Option<PathBuf>,
 }
 
 pub struct HttpIngressServer {
@@ -186,12 +184,25 @@ impl HttpIngressServer {
         let debug_enabled = config.runner_host.debug_enabled();
         let domains = config.domains;
         let runner_host = config.runner_host;
-        let webchat_spa_dir = config.webchat_spa_dir.clone();
+        let static_route_plan = discover_from_bundle(
+            runner_host.bundle_root(),
+            &ReservedRouteSet::operator_defaults(),
+        )
+        .context("discover static routes from active bundle")?;
+        if !static_route_plan.blocking_failures.is_empty() {
+            anyhow::bail!(
+                "static route validation failed: {}",
+                static_route_plan.blocking_failures.join("; ")
+            );
+        }
+        for warning in &static_route_plan.warnings {
+            operator_log::warn(module_path!(), format!("static route warning: {warning}"));
+        }
+        let active_route_table = ActiveRouteTable::from_plan(&static_route_plan);
         let state = Arc::new(HttpIngressState {
             runner_host,
             domains,
-            webchat_spa_dir,
-            bot_activities: BotActivityStore::default(),
+            active_route_table,
             tg_form_store: TelegramFormStore::default(),
         });
         let (tx, rx) = oneshot::channel();
@@ -285,8 +296,7 @@ impl HttpIngressServer {
 struct HttpIngressState {
     runner_host: Arc<DemoRunnerHost>,
     domains: Vec<Domain>,
-    webchat_spa_dir: Option<PathBuf>,
-    bot_activities: BotActivityStore,
+    active_route_table: ActiveRouteTable,
     tg_form_store: TelegramFormStore,
 }
 
@@ -330,26 +340,8 @@ async fn handle_request_inner(
             .map_err(|err| *err);
     }
 
-    // Direct Line routes: /token, /v3/directline/*, /directline/*
-    if path == "/token" || path.starts_with("/v3/directline") || path.starts_with("/directline") {
-        return handle_directline_request(req, &path, state).await;
-    }
-
-    // Serve provider GUI assets: /v1/messaging/{provider}/{tenant}/{team}/gui/[...]
-    if let Some(spa_dir) = state.webchat_spa_dir.as_ref() {
-        match parse_gui_route(&path) {
-            Some(gui) => return serve_spa_file(spa_dir, &gui.asset_path, Some(&gui.tenant)),
-            None if path_needs_gui_trailing_slash(&path) => {
-                // Redirect /gui → /gui/ so relative asset paths resolve correctly.
-                let location = format!("{}/", path);
-                return Ok(Response::builder()
-                    .status(StatusCode::MOVED_PERMANENTLY)
-                    .header("Location", &location)
-                    .body(Full::from(Bytes::new()))
-                    .unwrap());
-            }
-            _ => {}
-        }
+    if let Some(route_match) = state.active_route_table.match_request(&path) {
+        return Ok(serve_static_route(&route_match));
     }
 
     let method = req.method().clone();
@@ -1242,305 +1234,6 @@ fn run_app_flow_safe(
     }
 }
 
-/// Handle Direct Line API requests: /token, /v3/directline/*, /directline/*
-async fn handle_directline_request(
-    req: Request<Incoming>,
-    path: &str,
-    state: Arc<HttpIngressState>,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
-    let method = req.method().clone();
-    let queries = collect_queries(req.uri().query());
-
-    // Extract tenant from query param, JWT Authorization header, or default
-    let tenant = queries
-        .iter()
-        .find(|(k, _)| k == "tenant")
-        .map(|(_, v)| v.clone())
-        .or_else(|| extract_tenant_from_jwt(req.headers()))
-        .unwrap_or_else(|| "default".to_string());
-
-    let provider = "messaging-webchat".to_string();
-    if !state.domains.contains(&Domain::Messaging) {
-        return Err(error_response(
-            StatusCode::NOT_FOUND,
-            "messaging domain disabled",
-        ));
-    }
-
-    // Map /token to the Direct Line tokens/generate path
-    let dl_path = if path == "/token" {
-        "/v3/directline/tokens/generate".to_string()
-    } else {
-        path.to_string()
-    };
-
-    // Extract conversation_id from the path before dl_path is moved
-    let conv_id = dl_path
-        .strip_prefix("/v3/directline/conversations/")
-        .and_then(|rest| rest.split('/').next())
-        .map(|s| s.to_string());
-
-    let headers = collect_headers(req.headers());
-    let payload_bytes = req
-        .into_body()
-        .collect()
-        .await
-        .map(|collected| collected.to_bytes())
-        .unwrap_or_default();
-
-    let context = OperatorContext {
-        tenant: tenant.clone(),
-        team: Some("default".to_string()),
-        correlation_id: None,
-    };
-
-    let ingress_request = IngressRequestV1 {
-        v: 1,
-        domain: "messaging".to_string(),
-        provider: provider.clone(),
-        handler: None,
-        tenant: tenant.clone(),
-        team: Some("default".to_string()),
-        method: method.as_str().to_string(),
-        path: dl_path,
-        query: queries,
-        headers,
-        body: payload_bytes.to_vec(),
-        correlation_id: None,
-        remote_addr: None,
-    };
-
-    let result = dispatch_http_ingress(
-        state.runner_host.as_ref(),
-        Domain::Messaging,
-        &ingress_request,
-        &context,
-    )
-    .map_err(|err| {
-        eprintln!("[directline] dispatch FAILED path={path} err={err}");
-        error_response(StatusCode::BAD_GATEWAY, err.to_string())
-    })?;
-
-    eprintln!(
-        "[directline] dispatch ok path={path} status={} envelopes={} body_len={}",
-        result.response.status,
-        result.messaging_envelopes.len(),
-        result.response.body.as_ref().map(|b| b.len()).unwrap_or(0),
-    );
-    if let Some(ref body) = result.response.body {
-        if body.len() < 2000 {
-            eprintln!("[directline] body={}", String::from_utf8_lossy(body));
-        }
-    }
-
-    // Route messaging envelopes through the pipeline (app flow → encode → send).
-    // Run synchronously so bot activities are available for the next GET poll.
-    if !result.messaging_envelopes.is_empty() {
-        let envelopes = result.messaging_envelopes.clone();
-        let bundle = state.runner_host.bundle_root().to_path_buf();
-        eprintln!(
-            "[directline] routing {} envelope(s) through messaging pipeline",
-            envelopes.len()
-        );
-        if let Err(err) = route_messaging_envelopes(
-            &bundle,
-            &state.runner_host,
-            &provider,
-            &context,
-            envelopes,
-            Some(&state.bot_activities),
-            Some(&state.tg_form_store),
-        ) {
-            eprintln!("[directline] messaging pipeline FAILED err={err}");
-        } else {
-            eprintln!("[directline] messaging pipeline completed ok");
-        }
-    }
-
-    // For GET /activities requests, inject any pending bot activities
-    let mut response = result.response;
-    if method == Method::GET {
-        if let Some(ref cid) = conv_id {
-            let pending = state.bot_activities.drain(cid);
-            if !pending.is_empty() {
-                eprintln!(
-                    "[directline] injecting {} bot activities for conv={} body_before={}",
-                    pending.len(),
-                    cid,
-                    response.body.as_ref().map(|b| b.len()).unwrap_or(0)
-                );
-                if let Some(ref body_bytes) = response.body {
-                    if let Ok(mut body_json) =
-                        serde_json::from_slice::<serde_json::Value>(body_bytes)
-                    {
-                        if let Some(activities) = body_json
-                            .get_mut("activities")
-                            .and_then(|a| a.as_array_mut())
-                        {
-                            activities.extend(pending);
-                        }
-                        // Increment watermark so Direct Line client recognises new activities
-                        if let Some(wm) = body_json.get("watermark").and_then(|w| w.as_str()) {
-                            if let Ok(n) = wm.parse::<u64>() {
-                                body_json["watermark"] = json!((n + 1).to_string());
-                            }
-                        }
-                        if let Ok(new_body) = serde_json::to_vec(&body_json) {
-                            eprintln!("[directline] body_after_inject len={}", new_body.len());
-                            // Dump to file for debugging
-                            let _ = std::fs::write(
-                                "/tmp/dl-inject-debug.json",
-                                serde_json::to_string_pretty(&body_json).unwrap_or_default(),
-                            );
-                            response.body = Some(new_body);
-                            // Remove stale Content-Length so hyper recalculates it.
-                            response
-                                .headers
-                                .retain(|(k, _)| !k.eq_ignore_ascii_case("content-length"));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    build_http_response(&response)
-        .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err))
-}
-
-/// Extract tenant from JWT Authorization bearer token claims.
-///
-/// The JWT payload contains `{"ctx":{"tenant":"..."}}`; we decode the payload
-/// segment (base64url, no signature verification needed here since the WASM
-/// component validates the token) and pull out the tenant field.
-fn extract_tenant_from_jwt(headers: &hyper::HeaderMap) -> Option<String> {
-    let auth = headers.get("authorization")?.to_str().ok()?;
-    let token = auth.strip_prefix("Bearer ")?.trim();
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(parts[1])
-        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(parts[1]))
-        .ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-    value
-        .get("ctx")
-        .and_then(|ctx| ctx.get("tenant"))
-        .and_then(|t| t.as_str())
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string())
-}
-
-struct GuiRouteMatch {
-    tenant: String,
-    asset_path: String,
-}
-
-/// Parse `/v1/messaging/{provider}/{tenant}/{team}/gui/[rest]` and return the
-/// tenant and asset sub-path.  Returns `None` when the URL does not match.
-/// Requires trailing slash on `/gui/`.
-fn parse_gui_route(path: &str) -> Option<GuiRouteMatch> {
-    // Expected: /v1/messaging/{provider}/{tenant}/{team}/gui/[...]
-    let segs: Vec<&str> = path.trim_start_matches('/').splitn(7, '/').collect();
-    // segs: [v1, messaging, provider, tenant, team, gui, ...rest]
-    if segs.len() < 6 {
-        return None;
-    }
-    if segs[0] != "v1" || segs[1] != "messaging" || segs[5] != "gui" {
-        return None;
-    }
-    // Must have trailing slash (segs.len() > 6 because splitn produces "" after "gui/").
-    if segs.len() <= 6 {
-        return None;
-    }
-    Some(GuiRouteMatch {
-        tenant: segs[3].to_string(),
-        asset_path: segs[6].to_string(),
-    })
-}
-
-/// Returns true when the path is exactly `/v1/messaging/{provider}/{tenant}/{team}/gui`
-/// (no trailing slash) so the caller can issue a redirect.
-fn path_needs_gui_trailing_slash(path: &str) -> bool {
-    let segs: Vec<&str> = path.trim_start_matches('/').splitn(7, '/').collect();
-    segs.len() == 6 && segs[0] == "v1" && segs[1] == "messaging" && segs[5] == "gui"
-}
-
-/// Serve a static file from the SPA assets directory, falling back to index.html
-/// for SPA client-side routing.  When `tenant` is provided and the response is
-/// index.html, a small `<script>` block is injected to set `window.__TENANT__`
-/// and `window.__BASE_PATH__` so the SPA resolves skin/assets correctly.
-#[allow(clippy::result_large_err)]
-fn serve_spa_file(
-    spa_dir: &Path,
-    request_path: &str,
-    tenant: Option<&str>,
-) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
-    // Normalise path and prevent directory traversal.
-    let clean = request_path.trim_start_matches('/');
-    if clean.contains("..") {
-        return Err(error_response(StatusCode::BAD_REQUEST, "invalid path"));
-    }
-
-    // Try the exact file first; fall back to index.html (SPA routing).
-    let serving_index;
-    let file_path = if clean.is_empty() {
-        serving_index = true;
-        spa_dir.join("index.html")
-    } else {
-        let candidate = spa_dir.join(clean);
-        if candidate.is_file() {
-            serving_index = false;
-            candidate
-        } else {
-            serving_index = true;
-            spa_dir.join("index.html")
-        }
-    };
-
-    let mut body = match std::fs::read(&file_path) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return Err(error_response(StatusCode::NOT_FOUND, "file not found"));
-        }
-    };
-
-    // Inject tenant globals into index.html so the SPA knows which tenant to load.
-    if serving_index {
-        if let Some(tenant) = tenant {
-            let inject = format!(
-                "<script>window.__TENANT__=\"{}\";window.__BASE_PATH__=\"./\";</script>",
-                tenant.replace('\\', "\\\\").replace('"', "\\\"")
-            );
-            let html = String::from_utf8_lossy(&body);
-            let patched = html.replace("<head>", &format!("<head>{inject}"));
-            body = patched.into_bytes();
-        }
-    }
-
-    let content_type = match file_path.extension().and_then(|ext| ext.to_str()) {
-        Some("html") => "text/html; charset=utf-8",
-        Some("js") | Some("mjs") => "application/javascript; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("svg") => "image/svg+xml",
-        Some("png") => "image/png",
-        Some("ico") => "image/x-icon",
-        Some("woff2") => "font/woff2",
-        Some("woff") => "font/woff",
-        Some("map") => "application/json",
-        _ => "application/octet-stream",
-    };
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, content_type)
-        .body(Full::from(Bytes::from(body)))
-        .unwrap())
-}
-
 fn cors_preflight_response() -> Response<Full<Bytes>> {
     Response::builder()
         .status(StatusCode::NO_CONTENT)
@@ -1633,6 +1326,116 @@ fn parse_domain(value: &str) -> Option<Domain> {
     }
 }
 
+fn serve_static_route(route_match: &StaticRouteMatch<'_>) -> Response<Full<Bytes>> {
+    if let Some(asset_path) = resolve_asset_path(route_match) {
+        match serve_static_asset(route_match.descriptor, &asset_path) {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(err) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+            }
+        }
+    }
+    if let Some(asset_path) = fallback_asset_path(route_match) {
+        match serve_static_asset(route_match.descriptor, &asset_path) {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(err) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+            }
+        }
+    }
+    error_response(StatusCode::NOT_FOUND, "file not found")
+}
+
+fn serve_static_asset(
+    descriptor: &StaticRouteDescriptor,
+    asset_path: &str,
+) -> anyhow::Result<Option<Response<Full<Bytes>>>> {
+    let Some(asset_path) = normalize_relative_request_path(asset_path) else {
+        return Ok(None);
+    };
+    let full_path = format!("{}/{}", descriptor.source_root, asset_path);
+    let body = match read_pack_asset_bytes(&descriptor.pack_path, &full_path)? {
+        Some(bytes) => bytes,
+        None => return Ok(None),
+    };
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, content_type_for_path(&full_path))
+        .header(CONTENT_LENGTH, body.len().to_string());
+    if let Some(cache_control) = cache_control_value(&descriptor.cache_strategy) {
+        builder = builder.header(CACHE_CONTROL, cache_control);
+    }
+    let response = builder
+        .body(Full::from(Bytes::from(body)))
+        .map_err(|err| anyhow::anyhow!("build static response: {err}"))?;
+    Ok(Some(response))
+}
+
+fn normalize_relative_request_path(path: &str) -> Option<String> {
+    let mut segments = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(segment) => {
+                segments.push(segment.to_string_lossy().to_string())
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return None,
+        }
+    }
+    if segments.is_empty() {
+        return None;
+    }
+    Some(segments.join("/"))
+}
+
+fn read_pack_asset_bytes(pack_path: &Path, asset_path: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    if pack_path.is_dir() {
+        let candidate = pack_path.join(asset_path);
+        return match std::fs::read(candidate) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
+        };
+    }
+    let file = std::fs::File::open(pack_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut entry = match archive.by_name(asset_path) {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(err) => {
+            return Err(anyhow::anyhow!(
+                "failed to open asset {} in {}: {err}",
+                asset_path,
+                pack_path.display()
+            ));
+        }
+    };
+    let mut bytes = Vec::new();
+    entry.read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
+}
+
+fn content_type_for_path(path: &str) -> &'static str {
+    match Path::new(path).extension().and_then(|ext| ext.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") | Some("mjs") => "application/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("map") => "application/json",
+        Some("txt") => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ParsedIngressRoute {
     domain: Domain,
@@ -1720,6 +1523,8 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<Full<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::static_routes::{CacheStrategy, RouteScopeSegment, StaticRouteDescriptor};
+    use tempfile::tempdir;
 
     #[test]
     fn parses_v1_route_with_optional_segments() {
@@ -1738,5 +1543,53 @@ mod tests {
             .expect("route should parse");
         assert_eq!(parsed.domain, Domain::Messaging);
         assert_eq!(parsed.team, "default");
+    }
+
+    #[test]
+    fn serves_static_index_and_spa_fallback_within_mount() {
+        let tmp = tempdir().expect("tempdir");
+        let asset_root = tmp.path().join("assets").join("site");
+        std::fs::create_dir_all(&asset_root).expect("asset root");
+        std::fs::write(asset_root.join("index.html"), "<html>ok</html>").expect("index");
+        std::fs::write(asset_root.join("app.js"), "console.log('ok');").expect("app js");
+
+        let descriptor = StaticRouteDescriptor {
+            route_id: "docs".into(),
+            pack_id: "docs-pack".into(),
+            pack_path: tmp.path().to_path_buf(),
+            public_path: "/v1/web/docs".into(),
+            source_root: "assets/site".into(),
+            index_file: Some("index.html".into()),
+            spa_fallback: Some("index.html".into()),
+            tenant_scoped: false,
+            team_scoped: false,
+            cache_strategy: CacheStrategy::None,
+            route_segments: vec![
+                RouteScopeSegment::Literal("v1".into()),
+                RouteScopeSegment::Literal("web".into()),
+                RouteScopeSegment::Literal("docs".into()),
+            ],
+        };
+        let table = ActiveRouteTable::from_plan(&crate::static_routes::StaticRoutePlan {
+            routes: vec![descriptor],
+            warnings: Vec::new(),
+            blocking_failures: Vec::new(),
+        });
+
+        let root_match = table.match_request("/v1/web/docs").expect("root match");
+        let root_response = serve_static_route(&root_match);
+        assert_eq!(root_response.status(), StatusCode::OK);
+
+        let app_match = table
+            .match_request("/v1/web/docs/app.js")
+            .expect("app asset match");
+        let app_response = serve_static_route(&app_match);
+        assert_eq!(app_response.status(), StatusCode::OK);
+
+        let spa_match = table
+            .match_request("/v1/web/docs/deep/link")
+            .expect("spa match");
+        let spa_response = serve_static_route(&spa_match);
+        assert_eq!(spa_response.status(), StatusCode::OK);
     }
 }

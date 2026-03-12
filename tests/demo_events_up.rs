@@ -85,6 +85,8 @@ services:
     demo_up_services(
         &config_path,
         &demo_config,
+        &Default::default(),
+        None,
         None,
         None,
         &BTreeSet::new(),

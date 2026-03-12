@@ -113,8 +113,12 @@
   - **Key dependencies / integration points:** Uses `component_qa_ops`, `qa_setup_wizard`, `setup_to_formspec`, and `demo::runner_host::OperatorContext`.
 - **Path:** `src/demo/`
   - **Role:** Demo bundle workflow.
-  - **Key functionality:** Builds demo bundles from resolved manifests, rewrites `project_root` to `./`, copies providers/packs/tenants (optionally only used providers), runs demo up with resolved binaries or config-driven services, orchestrates provider setup via runner, supports runtime-state demo down/status/logs, and supports demo doctor checks.
+  - **Key functionality:** Builds demo bundles from resolved manifests, rewrites `project_root` to `./`, copies providers/packs/tenants (optionally only used providers), runs demo up with resolved binaries or config-driven services, orchestrates provider setup via runner, supports runtime-state demo down/status/logs, and supports demo doctor checks. `src/demo/http_ingress.rs` now builds a manifest-driven static route table from `greentic.static-routes.v1` during server startup and serves active-bundle assets generically before falling through to the existing ingress framework.
   - **Key dependencies / integration points:** Uses `state/resolved` manifests and services runtime helpers.
+- **Path:** `src/static_routes.rs`
+  - **Role:** Runtime static route discovery and validation.
+  - **Key functionality:** Reads `greentic.static-routes.v1` directly from pack manifest extensions, normalizes route descriptors, validates reserved-path and overlapping-mount conflicts, and builds the active runtime route table used by the HTTP ingress server.
+  - **Key dependencies / integration points:** Uses `greentic_types::decode_pack_manifest`, `domains` pack discovery, and `src/demo/http_ingress.rs` for request-time serving.
 - **Path:** `src/demo/qa_bridge.rs`
   - **Role:** Bridge between provider QA output and FormSpec.
   - **Key functionality:** Converts provider WASM `qa-spec` JSON output (with i18n keys) into a `qa_spec::FormSpec`. Resolves question titles and descriptions from an i18n map, infers question types and secret flags from naming conventions, builds a `ResolvedI18nMap` for the QA engine, and normalizes boolean answers from natural language (yes/no/y/n) to true/false strings.
@@ -155,6 +159,7 @@
   - **Role:** Cloudflared discovery test.
   - **Key functionality:** Starts a fake cloudflared binary and verifies public URL detection/persistence; demo up smoke test starts fake gsm services from config.
   - **Key dependencies / integration points:** Uses `RuntimePaths` and `cloudflared`.
+  - **Current blocker:** `tests/demo_up_smoke.rs` and `tests/demo_events_up.rs` currently import private `greentic-start` modules from crate release `0.4.4`, so `cargo test --locked` fails until those tests are updated to a public API or `greentic-start` re-exports the expected modules again.
 - **Path:** `tests/provider_setup_smoke.rs`
   - **Role:** Provider setup smoke test.
   - **Key functionality:** Runs provider setup/verify with a fake runner and ensures output files are written.
@@ -191,6 +196,7 @@
   - **Role:** Local CI validation.
   - **Key functionality:** Runs fmt/clippy/test, validates publish prep + dry-run publish, and packages a host binstall artifact.
   - **Key dependencies / integration points:** Uses `ci/prepare_publish_workspace.sh` and `ci/package_binstall.sh`.
+  - **Current blocker:** `cargo clippy --locked -- -D warnings` passes after the local telemetry/state-store fix, but `cargo test --locked` is presently blocked by the `greentic-start` private-module drift noted above.
 - **Path:** `ci/package_binstall.sh`
   - **Role:** Artifact packaging.
   - **Key functionality:** Builds a release binary for a target triple and packages it as tar.gz/zip.
@@ -222,9 +228,12 @@
   - **Short description:** Remove GSM binary/config references from the demo bundle expectations so bundles no longer rely on `gsm-*` executables.
 
 ## 4. Broken, Failing, or Conflicting Areas
-- **Location:** Repo-wide
-  - **Evidence:** `ci/local_check.sh` completed successfully.
-  - **Likely cause / nature of issue:** N/A.
+- **Location:** `src/capability_bootstrap.rs`
+  - **Evidence:** `cargo test --no-run` currently fails because `greentic_telemetry::provider::*` and `greentic_runner_host::storage::new_redis_state_store` are no longer present in the resolved dependency versions.
+  - **Likely cause / nature of issue:** Workspace dependency/API drift unrelated to PR-OP-01 static-route changes.
+- **Location:** `ci/local_check.sh` / `greentic-interfaces-wasmtime` build script
+  - **Evidence:** `ci/local_check.sh` now reaches dependency compilation and then fails in `greentic-interfaces-wasmtime` build.rs with `failed to clear staging dir: Permission denied`.
+  - **Likely cause / nature of issue:** Build-script filesystem permission issue outside the `src/static_routes.rs` and `src/demo/http_ingress.rs` changes.
 
 ## 5. Notes for Future Work
 - Bundle scaffolding now creates `providers/messaging`, `providers/events`, `packs`, and tenant/team gmaps, so `demo doctor` can succeed without manual layout tweaks (PR-06).

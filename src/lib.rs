@@ -46,6 +46,7 @@ pub mod services;
 pub mod setup_input;
 pub mod setup_to_formspec;
 pub mod state_layout;
+pub mod static_routes;
 pub mod subscriptions_universal;
 pub mod supervisor;
 pub mod wizard;
