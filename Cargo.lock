@@ -2286,6 +2286,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_gtc",
  "sha2",
+ "tar",
  "tokio",
  "tracing",
  "ureq",
