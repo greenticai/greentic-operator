@@ -1,0 +1,775 @@
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, anyhow};
+use clap::{Parser, Subcommand, ValueEnum};
+mod bin_resolver;
+mod bundle_ref;
+mod capabilities;
+mod cards;
+mod cloudflared;
+mod config;
+mod demo_qa_bridge;
+mod dev_store_path;
+mod discovery;
+mod domains;
+mod gmap;
+mod ngrok;
+mod operator_i18n;
+mod operator_log;
+mod provider_config_envelope;
+mod qa_persist;
+mod runner_exec;
+mod runner_host;
+mod runner_integration;
+mod runtime;
+mod runtime_state;
+mod secret_name;
+mod secret_requirements;
+mod secret_value;
+mod secrets_backend;
+mod secrets_client;
+mod secrets_gate;
+mod secrets_manager;
+mod secrets_setup;
+mod services;
+mod state_layout;
+mod subscriptions_universal;
+mod supervisor;
+
+mod component_qa_ops;
+mod event_router;
+mod extension_pack;
+mod http_ingress;
+mod ingress;
+mod ingress_dispatch;
+mod ingress_types;
+mod messaging_app;
+mod messaging_dto;
+mod messaging_egress;
+mod offers;
+mod onboard;
+mod post_ingress_hooks;
+mod project;
+mod providers;
+mod setup_input;
+mod setup_to_formspec;
+mod timer_scheduler;
+
+mod admin_server;
+
+use runtime::NatsMode;
+
+const DEMO_DEFAULT_TENANT: &str = "demo";
+const DEMO_DEFAULT_TEAM: &str = "default";
+
+#[derive(Parser)]
+#[command(name = "greentic-start", version)]
+struct Cli {
+    #[arg(long, global = true)]
+    locale: Option<String>,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Start(StartArgs),
+    Up(StartArgs),
+    Stop(StopArgs),
+    Restart(StartArgs),
+}
+
+#[derive(Parser, Clone)]
+struct StartArgs {
+    #[arg(long)]
+    bundle: Option<String>,
+    #[arg(long)]
+    tenant: Option<String>,
+    #[arg(long)]
+    team: Option<String>,
+    #[arg(long, hide = true, conflicts_with = "nats")]
+    no_nats: bool,
+    #[arg(long = "nats", value_enum, default_value_t = NatsModeArg::Off)]
+    nats: NatsModeArg,
+    #[arg(long)]
+    nats_url: Option<String>,
+    #[arg(long)]
+    config: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = CloudflaredModeArg::On)]
+    cloudflared: CloudflaredModeArg,
+    #[arg(long)]
+    cloudflared_binary: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = NgrokModeArg::Off)]
+    ngrok: NgrokModeArg,
+    #[arg(long)]
+    ngrok_binary: Option<PathBuf>,
+    #[arg(long)]
+    runner_binary: Option<PathBuf>,
+    #[arg(long, value_enum, value_delimiter = ',')]
+    restart: Vec<RestartTarget>,
+    #[arg(long, value_name = "DIR")]
+    log_dir: Option<PathBuf>,
+    #[arg(long, conflicts_with = "quiet")]
+    verbose: bool,
+    #[arg(long, conflicts_with = "verbose")]
+    quiet: bool,
+    #[arg(long, help = "Enable mTLS admin API endpoint")]
+    admin: bool,
+    #[arg(long, default_value = "8443", help = "Port for the admin API endpoint")]
+    admin_port: u16,
+    #[arg(long, value_name = "DIR", help = "Directory containing admin TLS certs (server.crt, server.key, ca.crt)")]
+    admin_certs_dir: Option<PathBuf>,
+    #[arg(long, value_delimiter = ',', help = "Comma-separated list of allowed client CNs (empty = allow all valid certs)")]
+    admin_allowed_clients: Vec<String>,
+}
+
+#[derive(Parser, Clone)]
+struct StopArgs {
+    #[arg(long)]
+    bundle: Option<String>,
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
+    #[arg(long, default_value = DEMO_DEFAULT_TENANT)]
+    tenant: String,
+    #[arg(long, default_value = DEMO_DEFAULT_TEAM)]
+    team: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum NatsModeArg {
+    Off,
+    On,
+    External,
+}
+
+impl From<NatsModeArg> for NatsMode {
+    fn from(value: NatsModeArg) -> Self {
+        match value {
+            NatsModeArg::Off => NatsMode::Off,
+            NatsModeArg::On => NatsMode::On,
+            NatsModeArg::External => NatsMode::External,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CloudflaredModeArg {
+    On,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum NgrokModeArg {
+    On,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum RestartTarget {
+    All,
+    Cloudflared,
+    Ngrok,
+    Nats,
+    Gateway,
+    Egress,
+    Subscriptions,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartRequest {
+    pub bundle: Option<String>,
+    pub tenant: Option<String>,
+    pub team: Option<String>,
+    pub no_nats: bool,
+    pub nats: NatsModeArg,
+    pub nats_url: Option<String>,
+    pub config: Option<PathBuf>,
+    pub cloudflared: CloudflaredModeArg,
+    pub cloudflared_binary: Option<PathBuf>,
+    pub ngrok: NgrokModeArg,
+    pub ngrok_binary: Option<PathBuf>,
+    pub runner_binary: Option<PathBuf>,
+    pub restart: Vec<RestartTarget>,
+    pub log_dir: Option<PathBuf>,
+    pub verbose: bool,
+    pub quiet: bool,
+    pub admin: bool,
+    pub admin_port: u16,
+    pub admin_certs_dir: Option<PathBuf>,
+    pub admin_allowed_clients: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StopRequest {
+    pub bundle: Option<String>,
+    pub state_dir: Option<PathBuf>,
+    pub tenant: String,
+    pub team: String,
+}
+
+pub fn run_start_request(request: StartRequest) -> anyhow::Result<()> {
+    run_start(request)
+}
+
+pub fn run_restart_request(mut request: StartRequest) -> anyhow::Result<()> {
+    if request.restart.is_empty() {
+        request.restart.push(RestartTarget::All);
+    }
+    run_start(request)
+}
+
+pub fn run_stop_request(request: StopRequest) -> anyhow::Result<()> {
+    let state_dir = resolve_state_dir(request.state_dir, request.bundle.as_deref())?;
+    runtime::demo_down_runtime(&state_dir, &request.tenant, &request.team, false)
+}
+
+pub fn run_from_env() -> anyhow::Result<()> {
+    let selected_locale = std::env::args().skip(1).collect::<Vec<_>>();
+    let args = normalize_args(selected_locale);
+    let cli = Cli::try_parse_from(args)?;
+    if let Some(locale) = cli.locale.as_deref() {
+        operator_i18n::set_locale(locale);
+    }
+
+    match cli.command {
+        Command::Start(args) | Command::Up(args) => {
+            run_start_request(start_request_from_args(args))
+        }
+        Command::Restart(args) => run_restart_request(start_request_from_args(args)),
+        Command::Stop(args) => run_stop_request(stop_request_from_args(args)),
+    }
+}
+
+fn normalize_args(raw_tail: Vec<String>) -> Vec<String> {
+    let mut out = vec!["greentic-start".to_string()];
+    let mut stripped_demo_prefix = false;
+    let mut skip_next_value = false;
+    for arg in raw_tail {
+        if skip_next_value {
+            skip_next_value = false;
+            out.push(arg);
+            continue;
+        }
+        if arg_takes_value(&arg) {
+            skip_next_value = true;
+            out.push(arg);
+            continue;
+        }
+        if !stripped_demo_prefix && !arg.starts_with('-') {
+            stripped_demo_prefix = true;
+            if arg == "demo" {
+                continue;
+            }
+        }
+        out.push(arg);
+    }
+
+    let known = ["start", "up", "stop", "restart"];
+    let mut first_pos = None;
+    let mut skip_next_value = false;
+    for arg in out.iter().skip(1) {
+        if skip_next_value {
+            skip_next_value = false;
+            continue;
+        }
+        if arg_takes_value(arg) {
+            skip_next_value = true;
+            continue;
+        }
+        if !arg.starts_with('-') {
+            first_pos = Some(arg.clone());
+            break;
+        }
+    }
+    let should_insert_start = match first_pos {
+        Some(cmd) => !known.contains(&cmd.as_str()),
+        None => true,
+    };
+    if should_insert_start {
+        out.insert(1, "start".to_string());
+    }
+    out
+}
+
+fn arg_takes_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--locale"
+            | "--bundle"
+            | "--tenant"
+            | "--team"
+            | "--nats"
+            | "--nats-url"
+            | "--config"
+            | "--cloudflared"
+            | "--cloudflared-binary"
+            | "--ngrok"
+            | "--ngrok-binary"
+            | "--runner-binary"
+            | "--restart"
+            | "--log-dir"
+            | "--state-dir"
+            | "--admin-port"
+            | "--admin-certs-dir"
+            | "--admin-allowed-clients"
+    )
+}
+
+fn run_start(request: StartRequest) -> anyhow::Result<()> {
+    let restart: BTreeSet<String> = request.restart.iter().map(restart_name).collect();
+    let log_level = if request.quiet {
+        operator_log::Level::Warn
+    } else if request.verbose {
+        operator_log::Level::Debug
+    } else {
+        operator_log::Level::Info
+    };
+
+    let demo_paths = resolve_demo_paths(request.config.clone(), request.bundle.as_deref())?;
+    let config_path = demo_paths.config_path;
+    let config_dir = demo_paths.root_dir;
+    let state_dir = demo_paths.state_dir;
+    let log_dir = operator_log::init(
+        request
+            .log_dir
+            .clone()
+            .unwrap_or_else(|| config_dir.join("logs")),
+        log_level,
+    )?;
+
+    let mut demo_config = config::load_demo_config(&config_path)?;
+    apply_nats_overrides(&mut demo_config, &request);
+    let tenant = demo_config.tenant.clone();
+    let team = demo_config.team.clone();
+
+    let cloudflared = match request.cloudflared {
+        CloudflaredModeArg::Off => None,
+        CloudflaredModeArg::On => {
+            let explicit = request.cloudflared_binary.clone();
+            let binary = bin_resolver::resolve_binary(
+                "cloudflared",
+                &bin_resolver::ResolveCtx {
+                    config_dir: config_dir.clone(),
+                    explicit_path: explicit,
+                },
+            )?;
+            Some(cloudflared::CloudflaredConfig {
+                binary,
+                local_port: demo_config.services.gateway.port,
+                extra_args: Vec::new(),
+                restart: restart.contains("cloudflared"),
+            })
+        }
+    };
+
+    let ngrok = match request.ngrok {
+        NgrokModeArg::Off => None,
+        NgrokModeArg::On => {
+            let explicit = request.ngrok_binary.clone();
+            let binary = bin_resolver::resolve_binary(
+                "ngrok",
+                &bin_resolver::ResolveCtx {
+                    config_dir: config_dir.clone(),
+                    explicit_path: explicit,
+                },
+            )?;
+            Some(ngrok::NgrokConfig {
+                binary,
+                local_port: demo_config.services.gateway.port,
+                extra_args: Vec::new(),
+                restart: restart.contains("ngrok"),
+            })
+        }
+    };
+
+    let _ingress_server = runtime::demo_up_services(
+        &config_path,
+        &demo_config,
+        cloudflared,
+        ngrok,
+        &restart,
+        request.runner_binary.clone(),
+        &log_dir,
+        request.verbose,
+    )?;
+
+    // Start admin server if enabled
+    let _admin_server = if request.admin {
+        let certs_dir = request.admin_certs_dir.clone().unwrap_or_else(|| config_dir.join("certs"));
+        let tls_config = greentic_setup::admin::AdminTlsConfig {
+            server_cert: certs_dir.join("server.crt"),
+            server_key: certs_dir.join("server.key"),
+            client_ca: certs_dir.join("ca.crt"),
+            allowed_clients: request.admin_allowed_clients.clone(),
+            port: request.admin_port,
+        };
+        let admin_config = admin_server::AdminServerConfig {
+            tls_config,
+            bundle_root: config_dir.clone(),
+        };
+        match admin_server::AdminServer::start(admin_config) {
+            Ok(server) => Some(server),
+            Err(err) => {
+                operator_log::error(
+                    module_path!(),
+                    format!("failed to start admin server: {err}"),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    println!(
+        "demo start running (config={} tenant={} team={}); press Ctrl+C to stop",
+        config_path.display(),
+        tenant,
+        team
+    );
+    wait_for_ctrlc()?;
+    if let Some(server) = _admin_server {
+        let _ = server.stop();
+    }
+    if let Some(server) = _ingress_server {
+        let _ = server.stop();
+    }
+    runtime::demo_down_runtime(&state_dir, &tenant, &team, false)?;
+    Ok(())
+}
+
+fn apply_nats_overrides(config: &mut config::DemoConfig, args: &StartRequest) {
+    let nats_mode = if args.no_nats {
+        NatsModeArg::Off
+    } else {
+        args.nats
+    };
+
+    if let Some(nats_url) = args.nats_url.as_ref() {
+        config.services.nats.url = nats_url.clone();
+    }
+
+    match nats_mode {
+        NatsModeArg::Off => {
+            config.services.nats.enabled = false;
+            config.services.nats.spawn.enabled = false;
+        }
+        NatsModeArg::On => {
+            config.services.nats.enabled = true;
+            config.services.nats.spawn.enabled = true;
+        }
+        NatsModeArg::External => {
+            config.services.nats.enabled = true;
+            config.services.nats.spawn.enabled = false;
+        }
+    }
+}
+
+fn start_request_from_args(args: StartArgs) -> StartRequest {
+    StartRequest {
+        bundle: args.bundle,
+        tenant: args.tenant,
+        team: args.team,
+        no_nats: args.no_nats,
+        nats: args.nats,
+        nats_url: args.nats_url,
+        config: args.config,
+        cloudflared: args.cloudflared,
+        cloudflared_binary: args.cloudflared_binary,
+        ngrok: args.ngrok,
+        ngrok_binary: args.ngrok_binary,
+        runner_binary: args.runner_binary,
+        restart: args.restart,
+        log_dir: args.log_dir,
+        verbose: args.verbose,
+        quiet: args.quiet,
+        admin: args.admin,
+        admin_port: args.admin_port,
+        admin_certs_dir: args.admin_certs_dir,
+        admin_allowed_clients: args.admin_allowed_clients,
+    }
+}
+
+fn stop_request_from_args(args: StopArgs) -> StopRequest {
+    StopRequest {
+        bundle: args.bundle,
+        state_dir: args.state_dir,
+        tenant: args.tenant,
+        team: args.team,
+    }
+}
+
+struct DemoPaths {
+    config_path: PathBuf,
+    root_dir: PathBuf,
+    state_dir: PathBuf,
+}
+
+fn resolve_demo_paths(
+    explicit: Option<PathBuf>,
+    bundle: Option<&str>,
+) -> anyhow::Result<DemoPaths> {
+    if let Some(path) = explicit {
+        let root_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        return Ok(DemoPaths {
+            state_dir: root_dir.join("state"),
+            root_dir,
+            config_path: path,
+        });
+    }
+    if let Some(bundle_ref) = bundle {
+        let resolved = bundle_ref::resolve_bundle_ref(bundle_ref)?;
+        let root_dir = resolved.bundle_dir;
+        let config_path = resolve_bundle_config_path(&root_dir)?;
+        return Ok(DemoPaths {
+            state_dir: root_dir.join("state"),
+            root_dir,
+            config_path,
+        });
+    }
+    let cwd = std::env::current_dir()?;
+    let demo_path = cwd.join("demo").join("demo.yaml");
+    if demo_path.exists() {
+        let root_dir = demo_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        return Ok(DemoPaths {
+            state_dir: root_dir.join("state"),
+            root_dir,
+            config_path: demo_path,
+        });
+    }
+    let fallback = cwd.join("greentic.operator.yaml");
+    if fallback.exists() {
+        return Ok(DemoPaths {
+            state_dir: cwd.join("state"),
+            root_dir: cwd,
+            config_path: fallback,
+        });
+    }
+    Err(anyhow!(
+        "no demo config found; pass --config, --bundle, or create ./demo/demo.yaml"
+    ))
+}
+
+fn resolve_bundle_config_path(root_dir: &Path) -> anyhow::Result<PathBuf> {
+    let demo = root_dir.join("greentic.demo.yaml");
+    if demo.exists() {
+        return Ok(demo);
+    }
+    let fallback = root_dir.join("greentic.operator.yaml");
+    if fallback.exists() {
+        return Ok(fallback);
+    }
+    let nested_demo = root_dir.join("demo").join("demo.yaml");
+    if nested_demo.exists() {
+        return Ok(nested_demo);
+    }
+    Err(anyhow!(
+        "bundle config not found under {}; expected greentic.demo.yaml, greentic.operator.yaml, or demo/demo.yaml",
+        root_dir.display()
+    ))
+}
+
+fn resolve_state_dir(state_dir: Option<PathBuf>, bundle: Option<&str>) -> anyhow::Result<PathBuf> {
+    if let Some(state_dir) = state_dir {
+        return Ok(state_dir);
+    }
+    if let Some(bundle_ref) = bundle {
+        let resolved = bundle_ref::resolve_bundle_ref(bundle_ref)?;
+        return Ok(resolved.bundle_dir.join("state"));
+    }
+    Ok(PathBuf::from("state"))
+}
+
+fn wait_for_ctrlc() -> anyhow::Result<()> {
+    let runtime =
+        tokio::runtime::Runtime::new().context("failed to spawn runtime for Ctrl+C listener")?;
+    runtime.block_on(async {
+        tokio::signal::ctrl_c()
+            .await
+            .map_err(|err| anyhow!("failed to wait for Ctrl+C: {err}"))
+    })
+}
+
+fn restart_name(target: &RestartTarget) -> String {
+    match target {
+        RestartTarget::All => "all",
+        RestartTarget::Cloudflared => "cloudflared",
+        RestartTarget::Ngrok => "ngrok",
+        RestartTarget::Nats => "nats",
+        RestartTarget::Gateway => "gateway",
+        RestartTarget::Egress => "egress",
+        RestartTarget::Subscriptions => "subscriptions",
+    }
+    .to_string()
+}
+
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_args_inserts_start_for_short_form() {
+        let args = normalize_args(vec!["--tenant".into(), "demo".into()]);
+        assert_eq!(args[0], "greentic-start");
+        assert_eq!(args[1], "start");
+        assert_eq!(args[2], "--tenant");
+    }
+
+    #[test]
+    fn normalize_args_removes_demo_prefix() {
+        let args = normalize_args(vec!["demo".into(), "start".into(), "--tenant".into()]);
+        assert_eq!(args[0], "greentic-start");
+        assert_eq!(args[1], "start");
+        assert_eq!(args[2], "--tenant");
+    }
+
+    #[test]
+    fn normalize_args_keeps_explicit_stop() {
+        let args = normalize_args(vec!["stop".into(), "--tenant".into(), "demo".into()]);
+        assert_eq!(args[0], "greentic-start");
+        assert_eq!(args[1], "stop");
+        assert_eq!(args[2], "--tenant");
+        assert_eq!(args[3], "demo");
+    }
+
+    #[test]
+    fn normalize_args_strips_only_leading_demo_prefix() {
+        let args = normalize_args(vec![
+            "--locale".into(),
+            "en".into(),
+            "demo".into(),
+            "start".into(),
+            "--tenant".into(),
+            "demo".into(),
+        ]);
+        assert_eq!(args[0], "greentic-start");
+        assert_eq!(args[1], "--locale");
+        assert_eq!(args[2], "en");
+        assert_eq!(args[3], "start");
+        assert_eq!(args[4], "--tenant");
+        assert_eq!(args[5], "demo");
+    }
+
+    #[test]
+    fn normalize_args_keeps_runner_binary_value_with_demo_prefix() {
+        let args = normalize_args(vec![
+            "demo".into(),
+            "start".into(),
+            "--runner-binary".into(),
+            "/tmp/runner".into(),
+        ]);
+        assert_eq!(args[0], "greentic-start");
+        assert_eq!(args[1], "start");
+        assert_eq!(args[2], "--runner-binary");
+        assert_eq!(args[3], "/tmp/runner");
+    }
+
+    #[test]
+    fn apply_nats_overrides_disables_nats_for_flag() {
+        let mut config = config::DemoConfig::default();
+        let args = StartRequest {
+            bundle: None,
+            tenant: None,
+            team: None,
+            no_nats: false,
+            nats: NatsModeArg::Off,
+            nats_url: None,
+            config: None,
+            cloudflared: CloudflaredModeArg::Off,
+            cloudflared_binary: None,
+            ngrok: NgrokModeArg::Off,
+            ngrok_binary: None,
+            runner_binary: None,
+            restart: Vec::new(),
+            log_dir: None,
+            verbose: false,
+            quiet: false,
+            admin: false,
+            admin_port: 8443,
+            admin_certs_dir: None,
+            admin_allowed_clients: Vec::new(),
+        };
+        apply_nats_overrides(&mut config, &args);
+        assert!(!config.services.nats.enabled);
+        assert!(!config.services.nats.spawn.enabled);
+    }
+
+    #[test]
+    fn apply_nats_overrides_uses_external_url_without_spawn() {
+        let mut config = config::DemoConfig::default();
+        let args = StartRequest {
+            bundle: None,
+            tenant: None,
+            team: None,
+            no_nats: false,
+            nats: NatsModeArg::External,
+            nats_url: Some("nats://127.0.0.1:5555".into()),
+            config: None,
+            cloudflared: CloudflaredModeArg::Off,
+            cloudflared_binary: None,
+            ngrok: NgrokModeArg::Off,
+            ngrok_binary: None,
+            runner_binary: None,
+            restart: Vec::new(),
+            log_dir: None,
+            verbose: false,
+            quiet: false,
+            admin: false,
+            admin_port: 8443,
+            admin_certs_dir: None,
+            admin_allowed_clients: Vec::new(),
+        };
+        apply_nats_overrides(&mut config, &args);
+        assert!(config.services.nats.enabled);
+        assert!(!config.services.nats.spawn.enabled);
+        assert_eq!(config.services.nats.url, "nats://127.0.0.1:5555");
+    }
+
+    #[test]
+    fn resolve_demo_paths_prefers_bundle_greentic_demo_yaml() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle = temp.path();
+        std::fs::write(
+            bundle.join("greentic.demo.yaml"),
+            "version: \"1\"\nproject_root: \"./\"\n",
+        )
+        .expect("write config");
+
+        let paths =
+            resolve_demo_paths(None, Some(bundle.to_string_lossy().as_ref())).expect("paths");
+        assert_eq!(paths.root_dir, bundle);
+        assert_eq!(paths.config_path, bundle.join("greentic.demo.yaml"));
+        assert_eq!(paths.state_dir, bundle.join("state"));
+    }
+
+    #[test]
+    fn resolve_demo_paths_accepts_file_bundle_ref() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle = temp.path();
+        std::fs::write(
+            bundle.join("greentic.demo.yaml"),
+            "version: \"1\"\nproject_root: \"./\"\n",
+        )
+        .expect("write config");
+        let file_ref = format!("file://{}", bundle.display());
+
+        let paths = resolve_demo_paths(None, Some(&file_ref)).expect("paths");
+        assert_eq!(paths.config_path, bundle.join("greentic.demo.yaml"));
+    }
+
+    #[test]
+    fn resolve_state_dir_uses_bundle_state_when_requested() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle = temp.path();
+        let state_dir =
+            resolve_state_dir(None, Some(bundle.to_string_lossy().as_ref())).expect("state dir");
+        assert_eq!(state_dir, bundle.join("state"));
+    }
+}

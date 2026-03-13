@@ -18,6 +18,8 @@ pub struct DetectedDomains {
     pub messaging: bool,
     pub events: bool,
     pub oauth: bool,
+    pub state: bool,
+    pub secrets: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -49,7 +51,7 @@ pub fn discover_with_options(
     options: DiscoveryOptions,
 ) -> anyhow::Result<DiscoveryResult> {
     let mut providers = Vec::new();
-    for domain in [Domain::Messaging, Domain::Events, Domain::OAuth] {
+    for domain in [Domain::Messaging, Domain::Events, Domain::OAuth, Domain::State, Domain::Secrets] {
         let cfg = domains::config(domain);
         let providers_dir = root.join(cfg.providers_dir);
         if !providers_dir.exists() {
@@ -94,6 +96,8 @@ pub fn discover_with_options(
             .any(|provider| provider.domain == "messaging"),
         events: providers.iter().any(|provider| provider.domain == "events"),
         oauth: providers.iter().any(|provider| provider.domain == "oauth"),
+        state: providers.iter().any(|provider| provider.domain == "state"),
+        secrets: providers.iter().any(|provider| provider.domain == "secrets"),
     };
     Ok(DiscoveryResult { domains, providers })
 }

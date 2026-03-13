@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,6 +15,7 @@ pub enum Domain {
     Events,
     Secrets,
     OAuth,
+    State,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +73,12 @@ pub fn config(domain: Domain) -> DomainConfig {
             diagnostics_flow: "diagnostics",
             verify_flows: &[],
         },
+        Domain::State => DomainConfig {
+            providers_dir: "providers/state",
+            setup_flow: "setup_default",
+            diagnostics_flow: "diagnostics",
+            verify_flows: &[],
+        },
     }
 }
 
@@ -79,6 +88,7 @@ pub fn validator_pack_path(root: &Path, domain: Domain) -> Option<PathBuf> {
         Domain::Events => "validators-events.gtpack",
         Domain::Secrets => "validators-secrets.gtpack",
         Domain::OAuth => "validators-oauth.gtpack",
+        Domain::State => "validators-state.gtpack",
     };
     let path = root.join("validators").join(domain_name(domain)).join(name);
     if path.exists() { Some(path) } else { None }
@@ -293,6 +303,14 @@ pub fn plan_runs(
         }
     }
     Ok(plan)
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PackManifestForDiscovery {
+    #[serde(default)]
+    pub meta: Option<PackMeta>,
+    #[serde(default)]
+    pub pack_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -741,5 +759,6 @@ pub(crate) fn domain_name(domain: Domain) -> &'static str {
         Domain::Events => "events",
         Domain::Secrets => "secrets",
         Domain::OAuth => "oauth",
+        Domain::State => "state",
     }
 }

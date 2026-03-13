@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{backtrace::Backtrace, env};
 
 #[inline]
