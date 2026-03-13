@@ -104,7 +104,7 @@ async fn handle_deploy(
         Err(e) => {
             return json_response(
                 StatusCode::BAD_REQUEST,
-                &AdminResponse::<()>::err(&format!("invalid request: {e}")),
+                &AdminResponse::<()>::err(format!("invalid request: {e}")),
             );
         }
     };
@@ -143,7 +143,7 @@ async fn handle_deploy(
         }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &AdminResponse::<()>::err(&e.to_string()),
+            &AdminResponse::<()>::err(e.to_string()),
         ),
     }
 }
@@ -158,7 +158,7 @@ async fn handle_remove(
         Err(e) => {
             return json_response(
                 StatusCode::BAD_REQUEST,
-                &AdminResponse::<()>::err(&format!("invalid request: {e}")),
+                &AdminResponse::<()>::err(format!("invalid request: {e}")),
             );
         }
     };
@@ -194,7 +194,7 @@ async fn handle_remove(
         }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &AdminResponse::<()>::err(&e.to_string()),
+            &AdminResponse::<()>::err(e.to_string()),
         ),
     }
 }
@@ -238,7 +238,7 @@ async fn handle_qa_spec(
         }
         None => json_response(
             StatusCode::NOT_FOUND,
-            &AdminResponse::<()>::err(&format!("provider pack not found: {provider_id}")),
+            &AdminResponse::<()>::err(format!("provider pack not found: {provider_id}")),
         ),
     }
 }
@@ -273,9 +273,7 @@ async fn handle_qa_validate(
                         ),
                         Err(e) => json_response(
                             StatusCode::OK,
-                            &AdminResponse::ok(
-                                json!({"valid": false, "error": e.to_string()}),
-                            ),
+                            &AdminResponse::ok(json!({"valid": false, "error": e.to_string()})),
                         ),
                     }
                 }
@@ -287,7 +285,7 @@ async fn handle_qa_validate(
         }
         None => json_response(
             StatusCode::NOT_FOUND,
-            &AdminResponse::<()>::err(&format!("provider not found: {provider_id}")),
+            &AdminResponse::<()>::err(format!("provider not found: {provider_id}")),
         ),
     }
 }
@@ -334,7 +332,7 @@ async fn handle_qa_submit(
         ),
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &AdminResponse::<()>::err(&e.to_string()),
+            &AdminResponse::<()>::err(e.to_string()),
         ),
     }
 }

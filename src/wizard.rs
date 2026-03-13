@@ -1549,7 +1549,11 @@ fn run_webhook_setup_from_answers(
             continue;
         }
         // Need public_base_url to register webhooks
-        let Some(public_url) = obj.get("public_base_url").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+        let Some(public_url) = obj
+            .get("public_base_url")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        else {
             continue;
         };
         if !public_url.starts_with("https://") {
@@ -1599,7 +1603,10 @@ fn run_webhook_setup_from_answers(
                         println!(
                             "webhook: {} registered ({})",
                             provider_id,
-                            result.get("webhook_url").and_then(|v| v.as_str()).unwrap_or("ok")
+                            result
+                                .get("webhook_url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("ok")
                         );
                     } else {
                         crate::operator_log::warn(
@@ -1609,7 +1616,10 @@ fn run_webhook_setup_from_answers(
                                 provider_id, tenant, result
                             ),
                         );
-                        let err = result.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let err = result
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
                         println!("webhook: {} failed ({})", provider_id, err);
                     }
                 }

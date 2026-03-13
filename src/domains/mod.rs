@@ -296,14 +296,6 @@ pub fn plan_runs(
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct PackManifestForDiscovery {
-    #[serde(default)]
-    pub meta: Option<PackMeta>,
-    #[serde(default)]
-    pub pack_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct PackManifest {
     #[serde(default)]
     meta: Option<PackMeta>,

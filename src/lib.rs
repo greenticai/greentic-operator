@@ -54,9 +54,9 @@ pub mod wizard_spec_builder;
 // ── Re-exports from greentic-setup ──────────────────────────────────────
 // These modules were extracted from this crate into greentic-setup.
 // Re-exporting them keeps `use crate::<module>::*` imports working.
-pub use greentic_setup::secrets as dev_store_path;
 pub use greentic_setup::discovery;
 pub use greentic_setup::secret_name;
+pub use greentic_setup::secrets as dev_store_path;
 pub use greentic_setup::setup_input;
 pub use greentic_setup::setup_to_formspec;
 
