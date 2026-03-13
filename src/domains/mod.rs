@@ -321,15 +321,19 @@ struct PackFlow {
 
 fn read_pack_manifest(path: &Path) -> anyhow::Result<PackManifest> {
     let file = std::fs::File::open(path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
-    let manifest = read_pack_manifest_data(&mut archive, path)
-        .with_context(|| format!("failed to read pack manifest from {}", path.display()))?;
-    let meta = build_pack_meta(&manifest, path);
-    Ok(PackManifest {
-        meta: Some(meta),
-        pack_id: None,
-        flows: Vec::new(),
-    })
+    match zip::ZipArchive::new(file) {
+        Ok(mut archive) => {
+            let manifest = read_pack_manifest_data(&mut archive, path)
+                .with_context(|| format!("failed to read pack manifest from {}", path.display()))?;
+            let meta = build_pack_meta(&manifest, path);
+            Ok(PackManifest {
+                meta: Some(meta),
+                pack_id: None,
+                flows: Vec::new(),
+            })
+        }
+        Err(_) => read_pack_manifest_from_tar(path),
+    }
 }
 
 pub(crate) fn read_pack_meta(path: &Path) -> anyhow::Result<PackMeta> {
@@ -345,22 +349,26 @@ pub(crate) fn read_pack_meta(path: &Path) -> anyhow::Result<PackMeta> {
 
 fn read_pack_manifest_cbor_only(path: &Path) -> anyhow::Result<PackManifest> {
     let file = std::fs::File::open(path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
-    let manifest = match read_manifest_cbor(&mut archive, path).map_err(|err| {
-        anyhow::anyhow!(
-            "failed to decode manifest.cbor in {}: {err}",
-            path.display()
-        )
-    })? {
-        Some(manifest) => manifest,
-        None => return Err(missing_cbor_error(path)),
-    };
-    let meta = build_pack_meta(&manifest, path);
-    Ok(PackManifest {
-        meta: Some(meta),
-        pack_id: None,
-        flows: Vec::new(),
-    })
+    match zip::ZipArchive::new(file) {
+        Ok(mut archive) => {
+            let manifest = match read_manifest_cbor(&mut archive, path).map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to decode manifest.cbor in {}: {err}",
+                    path.display()
+                )
+            })? {
+                Some(manifest) => manifest,
+                None => return Err(missing_cbor_error(path)),
+            };
+            let meta = build_pack_meta(&manifest, path);
+            Ok(PackManifest {
+                meta: Some(meta),
+                pack_id: None,
+                flows: Vec::new(),
+            })
+        }
+        Err(_) => read_pack_manifest_from_tar(path),
+    }
 }
 
 fn read_pack_manifest_data(
@@ -418,6 +426,34 @@ fn read_pack_manifest_from_dir(path: &Path) -> anyhow::Result<PackManifest> {
     }
     let bytes = fs::read(&manifest_path)?;
     parse_manifest_cbor_bytes(&bytes)
+}
+
+fn read_pack_manifest_from_tar(path: &Path) -> anyhow::Result<PackManifest> {
+    let bytes = read_tar_entry_bytes(path, "manifest.cbor")?;
+    let manifest = parse_manifest_cbor_bytes(&bytes)?;
+    let meta = build_pack_meta(&manifest, path);
+    Ok(PackManifest {
+        meta: Some(meta),
+        pack_id: None,
+        flows: Vec::new(),
+    })
+}
+
+fn read_tar_entry_bytes(path: &Path, entry_name: &str) -> anyhow::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let mut archive = tar::Archive::new(file);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if entry.path()?.as_ref() == Path::new(entry_name) {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+            return Ok(bytes);
+        }
+    }
+    Err(anyhow::anyhow!(
+        "pack manifest not found in archive {} (expected {entry_name})",
+        path.display()
+    ))
 }
 
 fn parse_manifest_cbor_bytes(bytes: &[u8]) -> anyhow::Result<PackManifest> {

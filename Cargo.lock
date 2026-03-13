@@ -2013,6 +2013,7 @@ dependencies = [
  "serde_yaml_gtc",
  "sys-locale",
  "sysinfo",
+ "tar",
  "tempfile",
  "tokio",
  "tracing",

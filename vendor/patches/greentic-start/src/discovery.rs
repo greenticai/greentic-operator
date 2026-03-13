@@ -113,38 +113,70 @@ pub fn persist(root: &Path, tenant: &str, discovery: &DiscoveryResult) -> anyhow
 
 fn read_pack_id_from_manifest(path: &Path) -> anyhow::Result<Option<String>> {
     let file = std::fs::File::open(path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
-    if let Some(parsed) = read_manifest_cbor_for_discovery(&mut archive).map_err(|err| {
-        anyhow::anyhow!(
-            "failed to decode manifest.cbor in {}: {err}",
-            path.display()
-        )
-    })? {
-        return extract_pack_id(parsed);
-    }
-    if let Some(parsed) = read_manifest_json_for_discovery(&mut archive, "pack.manifest.json")
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "failed to decode pack.manifest.json in {}: {err}",
-                path.display()
-            )
-        })?
-    {
-        return extract_pack_id(parsed);
+    match zip::ZipArchive::new(file) {
+        Ok(mut archive) => {
+            if let Some(parsed) = read_manifest_cbor_for_discovery(&mut archive).map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to decode manifest.cbor in {}: {err}",
+                    path.display()
+                )
+            })? {
+                return extract_pack_id(parsed);
+            }
+            if let Some(parsed) =
+                read_manifest_json_for_discovery(&mut archive, "pack.manifest.json").map_err(
+                    |err| {
+                        anyhow::anyhow!(
+                            "failed to decode pack.manifest.json in {}: {err}",
+                            path.display()
+                        )
+                    },
+                )?
+            {
+                return extract_pack_id(parsed);
+            }
+        }
+        Err(_) => {
+            if let Some(parsed) =
+                read_manifest_cbor_for_discovery_from_tar(path).map_err(|err| {
+                    anyhow::anyhow!(
+                        "failed to decode manifest.cbor in {}: {err}",
+                        path.display()
+                    )
+                })?
+            {
+                return extract_pack_id(parsed);
+            }
+        }
     }
     Ok(None)
 }
 
 fn read_pack_id_from_manifest_cbor_only(path: &Path) -> anyhow::Result<Option<String>> {
     let file = std::fs::File::open(path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
-    if let Some(parsed) = read_manifest_cbor_for_discovery(&mut archive).map_err(|err| {
-        anyhow::anyhow!(
-            "failed to decode manifest.cbor in {}: {err}",
-            path.display()
-        )
-    })? {
-        return extract_pack_id(parsed);
+    match zip::ZipArchive::new(file) {
+        Ok(mut archive) => {
+            if let Some(parsed) = read_manifest_cbor_for_discovery(&mut archive).map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to decode manifest.cbor in {}: {err}",
+                    path.display()
+                )
+            })? {
+                return extract_pack_id(parsed);
+            }
+        }
+        Err(_) => {
+            if let Some(parsed) =
+                read_manifest_cbor_for_discovery_from_tar(path).map_err(|err| {
+                    anyhow::anyhow!(
+                        "failed to decode manifest.cbor in {}: {err}",
+                        path.display()
+                    )
+                })?
+            {
+                return extract_pack_id(parsed);
+            }
+        }
     }
     Err(missing_cbor_error(path))
 }
@@ -192,6 +224,30 @@ fn read_manifest_json_for_discovery(
     std::io::Read::read_to_string(&mut file, &mut contents)?;
     let parsed: domains::PackManifestForDiscovery = serde_json::from_str(&contents)?;
     Ok(Some(parsed))
+}
+
+fn read_manifest_cbor_for_discovery_from_tar(
+    path: &Path,
+) -> anyhow::Result<Option<domains::PackManifestForDiscovery>> {
+    let file = std::fs::File::open(path)?;
+    let mut archive = tar::Archive::new(file);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if entry.path()?.as_ref() != Path::new("manifest.cbor") {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+        let value: CborValue = serde_cbor::from_slice(&bytes)?;
+        if let Some(pack_id) = extract_pack_id_from_value(&value)? {
+            return Ok(Some(domains::PackManifestForDiscovery {
+                meta: None,
+                pack_id: Some(pack_id),
+            }));
+        }
+        return Ok(None);
+    }
+    Ok(None)
 }
 
 fn extract_pack_id_from_value(value: &CborValue) -> anyhow::Result<Option<String>> {
