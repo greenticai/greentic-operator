@@ -1,6 +1,6 @@
 [package]
 name = "greentic-operator"
-version = "0.4.41"
+version = "0.4.42"
 edition = "2024"
 rust-version = "1.91"
 description = "Greentic operator CLI for local dev and demo orchestration."
@@ -64,7 +64,7 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
 hyper-util = "0.1"
 include_dir = "0.7"
-jsonschema = "0.44"
+jsonschema = "0.45"
 libc = "0.2"
 oci-distribution = { version = "0.11", default-features = false, features = ["rustls-tls"] }
 once_cell = "1.21"

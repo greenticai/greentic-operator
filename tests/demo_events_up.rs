@@ -6,22 +6,84 @@ use greentic_start::config::load_demo_config;
 use greentic_start::runtime::demo_up_services;
 use greentic_start::runtime_state::RuntimePaths;
 use greentic_start::supervisor;
+use greentic_types::flow::{FlowHasher, Routing};
+use greentic_types::{
+    ComponentId, Flow, FlowComponentRef, FlowId, FlowKind, FlowMetadata, InputMapping, Node,
+    NodeId, OutputMapping, PackFlowEntry, PackId, PackKind, PackManifest, PackSignatures,
+    TelemetryHints,
+};
+use indexmap::IndexMap;
+use semver::Version;
+use serde_json::{Value, json};
 
 fn write_pack(path: &std::path::Path, pack_id: &str) -> anyhow::Result<()> {
     let file = std::fs::File::create(path)?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::FileOptions::<()>::default();
     zip.start_file("manifest.cbor", options)?;
-    let manifest = serde_json::json!({
-        "meta": {
-            "pack_id": pack_id,
-            "entry_flows": ["setup_default"],
-        }
-    });
-    let bytes = serde_cbor::to_vec(&manifest)?;
+    let bytes = greentic_types::encode_pack_manifest(&build_manifest(pack_id)?)?;
     std::io::Write::write_all(&mut zip, &bytes)?;
     zip.finish()?;
     Ok(())
+}
+
+fn build_manifest(pack_id: &str) -> anyhow::Result<PackManifest> {
+    Ok(PackManifest {
+        schema_version: "pack-v1".into(),
+        pack_id: PackId::new(pack_id).unwrap(),
+        name: None,
+        version: Version::parse("0.1.0").unwrap(),
+        kind: PackKind::Provider,
+        publisher: "demo".into(),
+        components: Vec::new(),
+        flows: vec![PackFlowEntry {
+            id: FlowId::new("setup_default").unwrap(),
+            kind: FlowKind::Messaging,
+            flow: simple_flow("setup_default")?,
+            tags: Vec::new(),
+            entrypoints: vec!["default".to_string()],
+        }],
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        secret_requirements: Vec::new(),
+        signatures: PackSignatures::default(),
+        bootstrap: None,
+        extensions: None,
+    })
+}
+
+fn simple_flow(flow_id: &str) -> anyhow::Result<Flow> {
+    let node_id = NodeId::new("start").unwrap();
+    let mut nodes = IndexMap::with_hasher(FlowHasher::default());
+    nodes.insert(
+        node_id.clone(),
+        Node {
+            id: node_id.clone(),
+            component: FlowComponentRef {
+                id: ComponentId::new("emit.response").unwrap(),
+                pack_alias: None,
+                operation: None,
+            },
+            input: InputMapping {
+                mapping: json!({"payload":{"status":"ok"}}),
+            },
+            output: OutputMapping {
+                mapping: Value::Null,
+            },
+            routing: Routing::End,
+            telemetry: TelemetryHints::default(),
+        },
+    );
+    let mut entrypoints = std::collections::BTreeMap::new();
+    entrypoints.insert("default".to_string(), Value::Null);
+    Ok(Flow {
+        schema_version: "flow-v1".into(),
+        id: FlowId::new(flow_id).unwrap(),
+        kind: FlowKind::Messaging,
+        entrypoints,
+        nodes,
+        metadata: FlowMetadata::default(),
+    })
 }
 
 #[test]
