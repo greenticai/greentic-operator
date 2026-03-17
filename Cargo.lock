@@ -1899,9 +1899,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-distributor-client"
-version = "0.4.36"
+version = "0.4.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d83083dcb2f3a9581a6d734dcf45ab3680ab21eab23f0bd166b58fe9c0113521"
+checksum = "5f0bf35af065744f5bb5940b2f9fd036278385750e70410b67900d423464e01c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2040,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-operator"
-version = "0.4.42"
+version = "0.4.43"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4315,21 +4315,6 @@ name = "referencing"
 version = "0.44.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22952642836711d7a730d23a4dfb0d732e75a85e4c4f5704266d9c8fac278ff1"
-dependencies = [
- "ahash",
- "fluent-uri",
- "getrandom 0.3.4",
- "hashbrown 0.16.1",
- "parking_lot",
- "percent-encoding",
- "serde_json",
-]
-
-[[package]]
-name = "referencing"
-version = "0.45.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8a618c14f8ba29d8193bb55e2bf13e4fb2b1115313ecb7ae94b43100c7ac7d5"
 dependencies = [
  "ahash",
  "fluent-uri",
