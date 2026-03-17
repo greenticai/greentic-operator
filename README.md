@@ -17,7 +17,7 @@ gtc op demo start --bundle demo-bundle --tenant default --team default
 
 `demo start` is the canonical, long-running invocation: it boots the demo services in the foreground and waits for **Ctrl+C** to trigger a clean shutdown sequence. Press **Ctrl+C** in the terminal running the command to stop the services.
 
-Lifecycle ownership note: `greentic-operator demo start|up|stop|restart` delegates runtime lifecycle execution to `greentic-start`. Wizard, setup, and bundle UX remain in `greentic-operator`.
+Lifecycle ownership note: `greentic-operator demo start|up|stop|restart` delegates runtime lifecycle execution to `greentic-start`. Bundle creation/wizard UX now belongs to `greentic-dev -> greentic-bundle`; `greentic-operator` stays on the operations path.
 
 Access mapping (.gmap)
 

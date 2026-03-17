@@ -985,7 +985,6 @@ pub fn execute_create_plan(
             &plan.metadata.setup_answers,
         );
     }
-
     let copied = apply_access_and_sync(
         &plan.bundle,
         &plan.metadata.tenants,
@@ -1086,7 +1085,6 @@ pub fn execute_update_plan(
             remove_tenant_or_team(&plan.bundle, tenant, &mut warnings)?;
         }
     }
-
     let mut copied = Vec::new();
     if ops.contains(&WizardUpdateOp::AccessChange) {
         copied.extend(apply_access_and_sync(

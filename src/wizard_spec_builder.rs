@@ -125,6 +125,32 @@ fn create_validation_form(provider_ids: &[String]) -> Value {
                 }
             },
             {
+                "id": "deployment_targets",
+                "type": "list",
+                "title": "Deployment targets",
+                "required": false,
+                "list": {
+                    "fields": [
+                        {
+                            "id": "target",
+                            "type": "enum",
+                            "title": "Deployment target",
+                            "required": true,
+                            "choices": ["aws", "gcp", "azure", "single-vm", "runtime"]
+                        },
+                        { "id": "pack_ref", "type": "string", "title": "Deployer pack reference to bind to this target", "required": false },
+                        { "id": "provider_pack", "type": "string", "title": "Bundle-relative provider pack path (advanced)", "required": false },
+                        {
+                            "id": "default",
+                            "type": "enum",
+                            "title": "Make this the default deployment target?",
+                            "required": false,
+                            "choices": ["true", "false"]
+                        }
+                    ]
+                }
+            },
+            {
                 "id": "execution_mode",
                 "type": "enum",
                 "title": "Execution mode",
@@ -246,6 +272,32 @@ fn update_validation_form(provider_ids: &[String]) -> Value {
                 "required": false,
                 "list": {
                     "fields": [provider_field]
+                }
+            },
+            {
+                "id": "deployment_targets",
+                "type": "list",
+                "title": "Deployment targets",
+                "required": false,
+                "list": {
+                    "fields": [
+                        {
+                            "id": "target",
+                            "type": "enum",
+                            "title": "Deployment target",
+                            "required": true,
+                            "choices": ["aws", "gcp", "azure", "single-vm", "runtime"]
+                        },
+                        { "id": "pack_ref", "type": "string", "title": "Deployer pack reference to bind to this target", "required": false },
+                        { "id": "provider_pack", "type": "string", "title": "Bundle-relative provider pack path (advanced)", "required": false },
+                        {
+                            "id": "default",
+                            "type": "enum",
+                            "title": "Make this the default deployment target?",
+                            "required": false,
+                            "choices": ["true", "false"]
+                        }
+                    ]
                 }
             },
             {
