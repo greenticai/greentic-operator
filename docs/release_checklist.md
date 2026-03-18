@@ -15,6 +15,7 @@ Release Checklist (greentic-operator)
    - `greentic-operator-x86_64-apple-darwin-vX.Y.Z.tgz`
    - `greentic-operator-aarch64-apple-darwin-vX.Y.Z.tgz`
    - `greentic-operator-x86_64-pc-windows-msvc-vX.Y.Z.zip`
+   - `greentic-operator-aarch64-pc-windows-msvc-vX.Y.Z.zip`
 6. Validate cargo-binstall:
    - `cargo binstall greentic-operator --version X.Y.Z --force --no-confirm`
    - It must download the release asset and must not fall back to source build.
