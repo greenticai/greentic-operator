@@ -32,12 +32,14 @@ if [[ -z "$OUT_DIR" ]]; then
   exit 1
 fi
 
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+
 HOST_TARGET="$(rustc -vV | awk '/^host:/ {print $2}')"
 if [[ -z "$TARGET" ]]; then
   TARGET="$HOST_TARGET"
 fi
 
-mkdir -p "$OUT_DIR"
 pushd "$ROOT_DIR" >/dev/null
 
 if [[ "$TARGET" != "$HOST_TARGET" ]]; then
