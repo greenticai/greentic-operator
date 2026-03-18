@@ -71,7 +71,9 @@ cp "$BIN_DIR/$BIN_NAME" "$STAGING_ROOT/$BIN_NAME"
 if [[ "$TARGET" == *windows* ]]; then
   ARCHIVE="$OUT_DIR/${ARCHIVE_PREFIX}.zip"
   if command -v 7z >/dev/null 2>&1; then
-    7z a -tzip "$ARCHIVE" "$STAGING_ROOT/$BIN_NAME" >/dev/null
+    pushd "$STAGING_DIR" >/dev/null
+    7z a -tzip "$ARCHIVE" "$ARCHIVE_PREFIX/$BIN_NAME" >/dev/null
+    popd >/dev/null
   else
     echo "7z is required to package Windows artifacts." >&2
     exit 1
