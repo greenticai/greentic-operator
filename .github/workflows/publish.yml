@@ -57,15 +57,9 @@ jobs:
           components: rustfmt, clippy
       - name: Ensure rustfmt + clippy
         run: rustup component add rustfmt clippy
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            ~/.cargo/binstall
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: publish-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-binstall@1.6.2
@@ -84,13 +78,9 @@ jobs:
           components: rustfmt, clippy
       - name: Ensure rustfmt + clippy
         run: rustup component add rustfmt clippy
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: publish-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-binstall@1.6.2
@@ -109,13 +99,9 @@ jobs:
           components: rustfmt, clippy
       - name: Ensure rustfmt + clippy
         run: rustup component add rustfmt clippy
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: publish-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-binstall@1.6.2
@@ -134,13 +120,9 @@ jobs:
           components: rustfmt, clippy
       - name: Ensure rustfmt + clippy
         run: rustup component add rustfmt clippy
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: publish-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-binstall@1.6.2
@@ -200,13 +182,9 @@ jobs:
           components: rustfmt, clippy
       - name: Ensure rustfmt + clippy
         run: rustup component add rustfmt clippy
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: publish-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-binstall@1.6.2
