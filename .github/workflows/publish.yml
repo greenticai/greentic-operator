@@ -70,7 +70,7 @@ jobs:
         with:
           tool: cargo-binstall@1.6.2
       - name: Install Greentic CLIs
-        run: cargo binstall -y --locked --version 0.4 greentic-pack
+        run: cargo binstall -y --locked --disable-strategies quick-install --version 0.4 greentic-pack
       - name: Format
         run: cargo fmt --check
 
@@ -95,7 +95,7 @@ jobs:
         with:
           tool: cargo-binstall@1.6.2
       - name: Install Greentic CLIs
-        run: cargo binstall -y --locked --version 0.4 greentic-pack
+        run: cargo binstall -y --locked --disable-strategies quick-install --version 0.4 greentic-pack
       - name: Clippy
         run: cargo clippy --locked -- -D warnings
 
@@ -120,7 +120,7 @@ jobs:
         with:
           tool: cargo-binstall@1.6.2
       - name: Install Greentic CLIs
-        run: cargo binstall -y --locked --version 0.4 greentic-pack
+        run: cargo binstall -y --locked --disable-strategies quick-install --version 0.4 greentic-pack
       - name: Test
         run: cargo test --locked
 
@@ -145,7 +145,7 @@ jobs:
         with:
           tool: cargo-binstall@1.6.2
       - name: Install Greentic CLIs
-        run: cargo binstall -y --locked --version 0.4 greentic-pack
+        run: cargo binstall -y --locked --disable-strategies quick-install --version 0.4 greentic-pack
       - name: Prepare publish workspace
         id: prep
         run: |
@@ -215,7 +215,7 @@ jobs:
         with:
           tool: cross
       - name: Install Greentic CLIs
-        run: cargo binstall -y --locked --version 0.4 greentic-pack
+        run: cargo binstall -y --locked --disable-strategies quick-install --version 0.4 greentic-pack
       - name: Build and package
         env:
           USE_CROSS: ${{ matrix.use_cross == true && '1' || '0' }}
