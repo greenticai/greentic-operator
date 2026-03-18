@@ -85,10 +85,6 @@ pub struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Demo(Box<DemoCommand>),
-    #[command(
-        about = "Alias of demo wizard. Plan/create a demo bundle with pack refs and allow rules."
-    )]
-    Wizard(Box<DemoWizardArgs>),
 }
 
 #[derive(Parser)]
@@ -129,9 +125,7 @@ enum DemoSubcommand {
     ListPacks(DemoListPacksArgs),
     #[command(about = "List flows declared by a pack")]
     ListFlows(DemoListFlowsArgs),
-    #[command(
-        about = "Alias of wizard. Plan or create a demo bundle from pack refs and allow rules"
-    )]
+    #[command(hide = true)]
     Wizard(DemoWizardArgs),
     #[command(about = "Run interactive card-based setup wizard for a provider pack")]
     SetupWizard(DemoSetupWizardArgs),
@@ -1787,7 +1781,6 @@ impl Cli {
         let ctx = AppCtx {};
         match self.command {
             Command::Demo(demo) => demo.run(&ctx),
-            Command::Wizard(args) => args.run(),
         }
     }
 }
