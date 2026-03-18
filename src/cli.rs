@@ -2161,10 +2161,14 @@ impl DemoWizardArgs {
             })?;
             wizard::load_catalog_from_file(&path)?
         };
-        let qa_provider_ids = qa_catalog_entries
+        let qa_provider_labels = qa_catalog_entries
             .iter()
-            .map(|entry| entry.id.clone())
+            .map(|entry| entry.label.clone())
             .collect::<Vec<_>>();
+        let label_to_id: std::collections::HashMap<String, String> = qa_catalog_entries
+            .iter()
+            .map(|entry| (entry.label.clone(), entry.id.clone()))
+            .collect();
         let prefilled_answers = build_prefilled_wizard_answers_from_cli(&self, &effective_locale);
         let answers_input = self
             .answers
@@ -2179,13 +2183,36 @@ impl DemoWizardArgs {
                     mode,
                     &effective_locale,
                     prefilled_answers,
-                    &qa_provider_ids,
+                    &qa_provider_labels,
                     self.verbose,
                 )?,
                 None,
             )
         };
         merge_cli_overrides_into_wizard_answers(&mut answers, &self, &effective_locale);
+
+        // Convert provider labels back to IDs (wizard displays labels, but we need IDs internally)
+        for provider in &mut answers.providers {
+            match provider {
+                WizardProviderAnswer::Id(label) => {
+                    if let Some(id) = label_to_id.get(label.as_str()) {
+                        *label = id.clone();
+                    }
+                }
+                WizardProviderAnswer::Item { provider_id, id } => {
+                    if let Some(label) = provider_id.as_ref() {
+                        if let Some(mapped_id) = label_to_id.get(label.as_str()) {
+                            *provider_id = Some(mapped_id.clone());
+                        }
+                    }
+                    if let Some(label) = id.as_ref() {
+                        if let Some(mapped_id) = label_to_id.get(label.as_str()) {
+                            *id = Some(mapped_id.clone());
+                        }
+                    }
+                }
+            }
+        }
 
         let bundle = self
             .bundle

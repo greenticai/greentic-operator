@@ -34,10 +34,10 @@ pub fn build_validation_form(mode: WizardMode) -> Value {
     build_validation_form_with_providers(mode, &[])
 }
 
-pub fn build_validation_form_with_providers(mode: WizardMode, provider_ids: &[String]) -> Value {
+pub fn build_validation_form_with_providers(mode: WizardMode, provider_labels: &[String]) -> Value {
     match mode {
-        WizardMode::Create => create_validation_form(provider_ids),
-        WizardMode::Update => update_validation_form(provider_ids),
+        WizardMode::Create => create_validation_form(provider_labels),
+        WizardMode::Update => update_validation_form(provider_labels),
         WizardMode::Remove => remove_validation_form(),
     }
 }
