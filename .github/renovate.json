@@ -24,7 +24,7 @@
       ],
       "depNameTemplate": "greenticai/greentic-qa",
       "datasourceTemplate": "github-tags",
-      "versioningTemplate": "semver",
+      "versioningTemplate": "loose",
       "extractVersionTemplate": "^v?(?<version>.*)$"
     }
   ],
