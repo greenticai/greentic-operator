@@ -251,3 +251,11 @@ Use `gtc op demo subscriptions` to manage bindings manually:
 These commands are handy for smoke testing provider packs and delegated scenarios without running a full demo stack.
 
 Snapshot `docs/demo-universal-subscriptions.yaml` contains a ready-to-use `greentic.demo.yaml` snippet you can drop into a bundle before running `demo start --subscriptions-mode universal_ops`.
+
+## Dev builds
+
+Every Dev Publish run on `develop` creates a GitHub prerelease tagged
+`v1.2.<run-id>` carrying prebuilt `greentic-operator-dev` archives, which is what
+`gtc install --channel dev` installs. The binary inside reports that same
+`1.2.<run-id>` from `--version`, so any dev binary can be traced back to the
+release and the CI run that built it.
