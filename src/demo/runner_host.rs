@@ -1352,6 +1352,8 @@ fn build_demo_host_config(tenant: &str) -> HostConfig {
         validation: ValidationConfig::from_env(),
         operator_policy: OperatorPolicy::allow_all(),
         fast2flow: Default::default(),
+        agents: HashMap::new(),
+        graphs: HashMap::new(),
     }
 }
 

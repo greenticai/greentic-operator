@@ -42,18 +42,15 @@ base64 = "0.22"
 chrono = "0.4"
 directories-next = "2"
 # Must resolve to the SAME copy `greentic-deployer` and `greentic-runner-host` pull:
-# `EnvId` / `Environment` / `EnvironmentHostConfig` cross those boundaries in
-# `src/deployments/`, so two copies stop unifying (E0308). deploy-spec is 0.x, so
-# cargo treats 0.1 and 0.2 as incompatible and will happily keep both.
+# `EnvId` / `Environment` / `EnvironmentHostConfig` / `SpecError` cross those
+# boundaries in `src/deployments/`, so two copies stop unifying (E0308).
 #
-# Floor raised from 0.2.3 to 0.2.6 by forward-port (main carries =0.2.6 as an
-# exact pin for stable-lane isolation; develop keeps the open range because
-# dev-lane publishes are 0.2.<runid> and must resolve). 0.2.6 adds
-# `UpdateHostConfig::default_bundle` (`FieldUpdate<BundleId>`) and its `apply_to`
-# (greentic-deployer#521). The dev lane publishes 0.2.<runid>, which this range
-# already admits — do not rewrite it into a ">=1.2.0-dev"-style lane range.
-# Tracked upstream as greenticai/greentic-deployer#444.
-greentic-deploy-spec = ">=0.2.6, <0.3"
+# Moved from ">=0.2.6, <0.3" onto the 1.2.0-dev lane: deploy-spec is now
+# published as 1.2.0-dev.<runid> alongside the deployer, and current
+# greentic-deployer / greentic-runner-host / greentic-operator-trust all require
+# it from that lane. The old 0.2 range resolved a second copy
+# (0.2.34018717538) as soon as `cargo update` took those crates.
+greentic-deploy-spec = ">=1.2.0-dev, <1.3.0-0"
 # Floor 1.1.0-dev.26948183687: `op extensions` noun (compiled into this CLI via OpCommand).
 greentic-deployer = ">=1.2.0-dev, <1.3.0-0"
 greentic-setup = ">=1.2.0-dev, <1.3.0-0"
@@ -121,8 +118,11 @@ version = ">=1.2.0-dev, <1.3.0-0"
 # 1.2.0-dev.29558260044 and older declare deploy-spec ">=0.1.0-0, <0.2.0-0" —
 # drags a second deploy-spec copy back in and reintroduces the E0308 this floor
 # exists to prevent. An API floor, not a preference: don't lower it.
+# Floor 1.2.0-dev.36239801430: `FlowContext.caller` (constructed in src/demo/runner.rs), and
+# runner-host makes `agentic-worker` a default feature, which compiles
+# `HostConfig.{agents,graphs}` in. Both are filled in src/demo/.
 [dependencies.greentic-runner-host]
-version = ">=1.2.0-dev.29565371086, <1.3.0-0"
+version = ">=1.2.0-dev.36239801430, <1.3.0-0"
 
 [dependencies.greentic-secrets-lib]
 version = ">=1.2.0-dev, <1.3.0-0"
