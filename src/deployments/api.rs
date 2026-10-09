@@ -436,12 +436,14 @@ fn parse_json<T: DeserializeOwned>(body: &[u8]) -> Result<T, DeploymentError> {
 fn op_error_response(err: &OpError) -> DeploymentResponse {
     let status = match err {
         OpError::NotFound(_) => StatusCode::NOT_FOUND,
-        OpError::Conflict(_) => StatusCode::CONFLICT,
-        OpError::Unauthorized { .. } => StatusCode::FORBIDDEN,
+        OpError::Conflict(_) | OpError::NotDrained { .. } => StatusCode::CONFLICT,
+        OpError::Unauthorized { .. } | OpError::PermissionMissing(_) => StatusCode::FORBIDDEN,
         OpError::InvalidArgument(_) | OpError::Spec(_) | OpError::AnswersParse { .. } => {
             StatusCode::BAD_REQUEST
         }
-        OpError::NotYetImplemented(_) => StatusCode::NOT_IMPLEMENTED,
+        OpError::NotYetImplemented(_) | OpError::CapabilityMissing(_) => {
+            StatusCode::NOT_IMPLEMENTED
+        }
         OpError::Store(_)
         | OpError::Io { .. }
         | OpError::SchemaGeneration(_)
@@ -840,6 +842,7 @@ mod tests {
             sequence: 1,
             created_at: Utc::now(),
             bundle_digest: "sha256:00".into(),
+            runtime_image_digest: None,
             bundle_source_uri: None,
             pack_list: Vec::new(),
             pack_list_lock_ref: PathBuf::from("pack-list.lock"),

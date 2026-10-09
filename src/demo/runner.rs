@@ -161,7 +161,13 @@ impl DemoRunner {
             action: None,
             session_id: None,
             provider_id: None,
+            // No originating inbound activity to thread a reply back to — the
+            // demo runner drives a flow directly. Matches runner-desktop and
+            // runner-host's other non-inbound entry points.
             reply_scope: None,
+            // No inbound caller either: an absent caller is the runner's
+            // anonymous default, never an error.
+            caller: None,
             retry_config: host_config.retry_config().into(),
             attempt: 1,
             observer: None,

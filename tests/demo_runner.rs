@@ -91,6 +91,7 @@ fn blocking_pack_manifest(pack_id: &str) -> Result<PackManifest> {
                 node_id: NodeId::new("final").unwrap(),
             },
             telemetry: TelemetryHints::default(),
+            conversational: false,
         },
     );
     nodes.insert(
@@ -111,6 +112,7 @@ fn blocking_pack_manifest(pack_id: &str) -> Result<PackManifest> {
             err_map: None,
             routing: Routing::End,
             telemetry: TelemetryHints::default(),
+            conversational: false,
         },
     );
 

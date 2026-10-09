@@ -95,6 +95,7 @@ fn simple_flow(flow_id: &str) -> anyhow::Result<Flow> {
             err_map: None,
             routing: Routing::End,
             telemetry: TelemetryHints::default(),
+            conversational: false,
         },
     );
     let mut entrypoints = BTreeMap::new();
